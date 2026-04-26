@@ -1,5 +1,5 @@
-"""
-Encoding models.
+"""Encoding package.
 
-Planned: temporal response functions (TRF), ridge-regression encoding models.
+Import from explicit submodules in this package, such as
+``mveeg.encoding.io`` or ``mveeg.encoding.workflow``.
 """

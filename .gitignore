@@ -2,6 +2,9 @@
 __pycache__/
 *.py[codz]
 *$py.class
+.DS_Store
+AGENTS.md
+PLAN.md
 
 # C extensions
 *.so

@@ -14,7 +14,7 @@ workflows in psychology and cognitive neuroscience.
 |---|---|
 | `mveeg.encoding` | Temporal response functions and linear encoding models |
 | `mveeg.decoding` | LDA, logistic regression, and cross-validated classification |
-| `mveeg.preprocessing` | EEG helpers that produce model-ready arrays |
+| `mveeg.prep` | EEG helpers that produce model-ready arrays |
 | `mveeg.io` | Loading and saving model inputs / outputs |
 | `mveeg.summaries` | Group-level summaries and reporting helpers |
 | `mveeg.validation` | Input validation (trial counts, array shapes, …) |

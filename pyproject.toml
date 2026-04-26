@@ -17,6 +17,8 @@ dependencies = [
     "scikit-learn",
     "mne",
     "mne-bids",
+    "autoreject",
+    "matplotlib",
     "tqdm",
 ]
 

@@ -15,7 +15,7 @@ def test_subpackages_importable():
     """Every sub-package should be importable without error."""
     import mveeg.encoding
     import mveeg.decoding
-    import mveeg.preprocessing
+    import mveeg.prep
     import mveeg.io
     import mveeg.summaries
     import mveeg.validation
