@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mvmodels"
+version = "0.1.0"
+description = "Multivariate encoding and decoding models for EEG research"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["EEG", "encoding", "decoding", "neuroscience", "psychology"]
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "mne",
+    "mne-bids",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mvmodels"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
