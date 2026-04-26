@@ -318,17 +318,76 @@ class Preprocess:
             Matching filenames relative to ``subject_dir``, sorted
             alphabetically.
         """
-        subject_id = self._normalize_subject_id(subject_number)
-        subject_labels = {
-            f"{self.subject_prefix}{subject_id}",
-            f"{self.subject_prefix}-{subject_id}",
-            subject_id,
-        }
+        subject_labels = self._subject_file_labels(subject_number)
         matches = []
         for path in sorted(subject_dir.glob(f"*{extension}")):
             if any(label in path.stem for label in subject_labels):
                 matches.append(path.name)
         return matches
+
+    def _subject_file_labels(self, subject_number: str) -> set[str]:
+        """Return common subject labels used in raw filenames.
+
+        Parameters
+        ----------
+        subject_number : str
+            Subject label from the caller or folder name.
+
+        Returns
+        -------
+        set[str]
+            Labels checked against raw filenames, such as ``"001"``,
+            ``"sub001"``, and ``"sub-001"``.
+        """
+        subject_id = self._normalize_subject_id(subject_number)
+        return {
+            f"{self.subject_prefix}{subject_id}",
+            f"{self.subject_prefix}-{subject_id}",
+            subject_id,
+        }
+
+    def _find_behavior_file(self, subject_number: str, name_pattern: str) -> Path:
+        """Find exactly one behavior CSV by glob pattern and subject label.
+
+        Parameters
+        ----------
+        subject_number : str
+            Subject label from the caller or folder name.
+        name_pattern : str
+            Glob pattern evaluated inside the subject's raw-data folder, for
+            example ``"*_beh.csv"``.
+
+        Returns
+        -------
+        Path
+            The single matching behavior file.
+
+        Raises
+        ------
+        FileNotFoundError
+            If no file matches both the glob pattern and the subject label.
+        ValueError
+            If more than one candidate matches.
+        """
+        subject_dir = self._resolve_subject_dir(subject_number)
+        subject_labels = self._subject_file_labels(subject_number)
+        matches = []
+        for path in sorted(subject_dir.glob(name_pattern)):
+            if path.is_file() and any(label in path.stem for label in subject_labels):
+                matches.append(path)
+
+        if len(matches) == 0:
+            raise FileNotFoundError(
+                "Could not find a behavior file for "
+                f"subject {subject_number!r} using pattern {name_pattern!r} in {subject_dir}."
+            )
+        if len(matches) > 1:
+            names = ", ".join(path.name for path in matches)
+            raise ValueError(
+                "Found more than one behavior file for "
+                f"subject {subject_number!r} using pattern {name_pattern!r}: {names}."
+            )
+        return matches[0]
 
     def _apply_epoch_config(self, epoch_config: EpochConfig):
         self.srate = epoch_config.srate
@@ -610,40 +669,45 @@ class Preprocess:
 
         return eegdata, events
 
-    def import_behavior(self, subject_number, suffix="_beh.csv"):
+    def import_behavior(self, subject_number, name_pattern="*_beh.csv", suffix=None):
         """Import behavioral data into a BIDS-compatible TSV file.
 
         Parameters
         ----------
         subject_number : str
             Subject label from the caller or raw-data folder.
-        suffix : str, default "_data.csv"
-            Required filename ending for the behavior file after any optional
-            prefix match.
+        name_pattern : str, optional
+            Glob pattern evaluated inside the subject folder, for example
+            ``"*_beh.csv"``.
+        suffix : str | None, optional
+            Compatibility argument for older scripts. ``"_beh.csv"`` is mapped
+            to ``name_pattern="*_beh.csv"``.
 
         Returns
         -------
         None
             The function writes a BIDS behavior TSV into ``data_dir``.
         """
-        subject_dir = self._resolve_subject_dir(subject_number)
+        if suffix is not None:
+            name_pattern = f"*{suffix}"
         beh_path = self._raw_file_path(subject_number, "beh", "beh", ".tsv")
         beh_path.parent.mkdir(parents=True, exist_ok=True)
-        csv_files = self._find_subject_files(subject_dir, subject_number, ".csv")
-        for f in csv_files:
-            f = os.path.join(subject_dir, f)
-            if f.endswith(suffix):
-                pd.read_csv(f).to_csv(beh_path, sep="\t")
+        behavior_file = self._find_behavior_file(subject_number, name_pattern)
+        pd.read_csv(behavior_file).to_csv(beh_path, sep="\t")
 
-    def load_behavior_table(self, subject_number, suffix="_beh.csv"):
+    def load_behavior_table(self, subject_number, name_pattern="*_beh.csv", suffix=None):
         """Load one subject's behavioral CSV file.
 
         Parameters
         ----------
         subject_number : str
             Subject label from the caller or raw-data folder.
-        suffix : str, optional
-            Required filename ending for the behavior file.
+        name_pattern : str, optional
+            Glob pattern evaluated inside the subject folder, for example
+            ``"*_beh.csv"``.
+        suffix : str | None, optional
+            Compatibility argument for older scripts. ``"_beh.csv"`` is mapped
+            to ``name_pattern="*_beh.csv"``.
 
         Returns
         -------
@@ -655,17 +719,14 @@ class Preprocess:
         FileNotFoundError
             If no matching behavior CSV is found.
         """
-        subject_dir = self._resolve_subject_dir(subject_number)
-        csv_files = self._find_subject_files(subject_dir, subject_number, ".csv")
-        for filename in csv_files:
-            full_path = os.path.join(subject_dir, filename)
-            if full_path.endswith(suffix):
-                return pd.read_csv(full_path)
-        raise FileNotFoundError(f"Could not find a behavior file ending in {suffix} for subject {subject_number}.")
+        if suffix is not None:
+            name_pattern = f"*{suffix}"
+        behavior_file = self._find_behavior_file(subject_number, name_pattern)
+        return pd.read_csv(behavior_file)
 
-    def _load_behavior_table(self, subject_number, suffix="_beh.csv"):
+    def _load_behavior_table(self, subject_number, name_pattern="*_beh.csv", suffix=None):
         """Backward-compatible wrapper for ``load_behavior_table``."""
-        return self.load_behavior_table(subject_number, suffix=suffix)
+        return self.load_behavior_table(subject_number, name_pattern=name_pattern, suffix=suffix)
 
     def _normalize_epoch_trial_codes(self, event_codes):
         """Map epoch event codes back to their base condition codes.
@@ -777,7 +838,8 @@ class Preprocess:
         self,
         subject_number,
         epochs,
-        suffix="_beh.csv",
+        name_pattern="*_beh.csv",
+        suffix=None,
         behavior=None,
         matched_behavior_filter=None,
     ):
@@ -789,8 +851,12 @@ class Preprocess:
             Subject label used to find the raw behavior CSV.
         epochs : mne.Epochs
             Epoched EEG or EEG-plus-eye-tracking data.
-        suffix : str, optional
-            Required filename ending for the behavior file.
+        name_pattern : str, optional
+            Glob pattern used to locate the behavior file when ``behavior`` is
+            not provided.
+        suffix : str | None, optional
+            Compatibility argument for older scripts. ``"_beh.csv"`` is mapped
+            to ``name_pattern="*_beh.csv"``.
         behavior : pandas.DataFrame | None, optional
             Pre-filtered behavior table prepared by the caller. When
             ``None``, the method loads the subject's behavior CSV and applies
@@ -818,7 +884,7 @@ class Preprocess:
         using the same indices in both datasets.
         """
         if behavior is None:
-            behavior = self.load_behavior_table(subject_number, suffix=suffix)
+            behavior = self.load_behavior_table(subject_number, name_pattern=name_pattern, suffix=suffix)
             behavior = behavior[
                 behavior["trial_type"].isin(["exp", "pra"]) & behavior["rejection"].eq("no")
             ].reset_index(drop=True)
