@@ -1,5 +1,5 @@
 """
-mvmodels — multivariate encoding and decoding models for EEG research.
+mveeg — multivariate encoding and decoding models for EEG research.
 
 Sub-packages
 ------------

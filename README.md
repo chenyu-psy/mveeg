@@ -1,8 +1,8 @@
-# mvmodels
+# mveeg
 
 **Multivariate encoding and decoding models for EEG research.**
 
-`mvmodels` is a reusable Python package for building and evaluating
+`mveeg` is a reusable Python package for building and evaluating
 multivariate encoding and decoding models, with a focus on EEG analysis
 workflows in psychology and cognitive neuroscience.
 
@@ -12,12 +12,12 @@ workflows in psychology and cognitive neuroscience.
 
 | Sub-package | Purpose |
 |---|---|
-| `mvmodels.encoding` | Temporal response functions and linear encoding models |
-| `mvmodels.decoding` | LDA, logistic regression, and cross-validated classification |
-| `mvmodels.preprocessing` | EEG helpers that produce model-ready arrays |
-| `mvmodels.io` | Loading and saving model inputs / outputs |
-| `mvmodels.summaries` | Group-level summaries and reporting helpers |
-| `mvmodels.validation` | Input validation (trial counts, array shapes, …) |
+| `mveeg.encoding` | Temporal response functions and linear encoding models |
+| `mveeg.decoding` | LDA, logistic regression, and cross-validated classification |
+| `mveeg.preprocessing` | EEG helpers that produce model-ready arrays |
+| `mveeg.io` | Loading and saving model inputs / outputs |
+| `mveeg.summaries` | Group-level summaries and reporting helpers |
+| `mveeg.validation` | Input validation (trial counts, array shapes, …) |
 
 ## What it intentionally does *not* include
 
@@ -39,7 +39,7 @@ Or add it as an editable path dependency from another project's
 
 ```toml
 [tool.uv.sources]
-mvmodels = { path = "../mvmodels", editable = true }
+mveeg = { path = "../mveeg", editable = true }
 ```
 
 ---
@@ -47,11 +47,11 @@ mvmodels = { path = "../mvmodels", editable = true }
 ## Quick start
 
 ```python
-import mvmodels
-print(mvmodels.__version__)
+import mveeg
+print(mveeg.__version__)
 
 # Validate trial count before fitting
-from mvmodels.validation import check_trial_count
+from mveeg.validation import check_trial_count
 check_trial_count(n_trials=80)   # passes silently; raises ValueError if too few
 ```
 

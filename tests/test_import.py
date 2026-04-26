@@ -1,24 +1,24 @@
 """Minimal tests that verify the package imports and placeholder helpers."""
 
 import pytest
-import mvmodels
-from mvmodels.validation import check_trial_count
+import mveeg
+from mveeg.validation import check_trial_count
 
 
 def test_version_string():
     """__version__ should be a non-empty string."""
-    assert isinstance(mvmodels.__version__, str)
-    assert mvmodels.__version__ != ""
+    assert isinstance(mveeg.__version__, str)
+    assert mveeg.__version__ != ""
 
 
 def test_subpackages_importable():
     """Every sub-package should be importable without error."""
-    import mvmodels.encoding
-    import mvmodels.decoding
-    import mvmodels.preprocessing
-    import mvmodels.io
-    import mvmodels.summaries
-    import mvmodels.validation
+    import mveeg.encoding
+    import mveeg.decoding
+    import mveeg.preprocessing
+    import mveeg.io
+    import mveeg.summaries
+    import mveeg.validation
 
 
 def test_check_trial_count_passes():

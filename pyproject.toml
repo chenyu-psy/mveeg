@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mvmodels"
+name = "mveeg"
 version = "0.1.0"
 description = "Multivariate encoding and decoding models for EEG research"
 readme = "README.md"
@@ -31,7 +31,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mvmodels"]
+packages = ["src/mveeg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
