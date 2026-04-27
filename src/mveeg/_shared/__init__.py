@@ -14,7 +14,6 @@ from .io_filters import (
     load_subject_metadata_table,
 )
 from .time_windows import average_time_windows, build_time_windows
-from .topography import plot_scalp_topography, save_window_topography_set
 
 __all__ = [
     "DataPathsConfig",
@@ -28,6 +27,4 @@ __all__ = [
     "load_subject_metadata_table",
     "average_time_windows",
     "build_time_windows",
-    "plot_scalp_topography",
-    "save_window_topography_set",
 ]
