@@ -251,6 +251,9 @@ def run_manual_qc_session(
     subject_prefix: str = "sub",
     srate: float | None = None,
     rejection_time: list[float | None] | tuple[float | None, float | None] | None = None,
+    downscale: dict[str, float] | None = None,
+    channels_drop: list[str] | tuple[str, ...] | None = None,
+    channels_ignore: list[str] | tuple[str, ...] | None = None,
     min_rejections: int = 10,
     input_subject: str | None = None,
     input_trial_category: str | int | None = None,
@@ -269,6 +272,12 @@ def run_manual_qc_session(
         Sampling rate for plotting. If ``None``, use the saved epochs value.
     rejection_time : list[float | None] | tuple[float | None, float | None] | None, optional
         Start and end of the artifact-rejection window in seconds.
+    downscale : dict[str, float] | None, optional
+        Optional per-channel-type plotting scale factors.
+    channels_drop : list[str] | tuple[str, ...] | None, optional
+        Channels dropped from the browser before plotting.
+    channels_ignore : list[str] | tuple[str, ...] | None, optional
+        Channels shown in the browser but excluded from manual rejection flags.
     min_rejections : int, optional
         Minimum channel rejection count shown by ``print_flagged_channels``.
     input_subject : str | None, optional
@@ -321,6 +330,9 @@ def run_manual_qc_session(
         subject_prefix=subject_prefix,
         srate=srate,
         rejection_time=list(rejection_time) if rejection_time is not None else None,
+        downscale=downscale,
+        channels_drop=channels_drop,
+        channels_ignore=channels_ignore,
         trial_category=trial_category,
     )
 
