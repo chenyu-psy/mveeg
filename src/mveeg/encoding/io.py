@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .._shared.io_filters import load_subject_info_with_channel_drop
 from .summaries import (
     build_condition_average_pattern_expression_table,
     build_trial_pattern_expression_table,
@@ -274,6 +275,25 @@ def load_encoding_model_result(
     output_path = encoding_model_result_path(output_dir, subject_id)
     with np.load(output_path, allow_pickle=True) as saved:
         return {key: saved[key] for key in saved.files}
+
+
+def load_subject_info(subject_id: str, cfg) -> object:
+    """Load epochs info for topography plotting after matching channel drops.
+
+    Parameters
+    ----------
+    subject_id : str
+        Subject identifier without the ``sub-`` prefix.
+    cfg : object
+        Encoding loader config with dataset and epoch channel-drop fields.
+
+    Returns
+    -------
+    object
+        MNE info object containing the retained channel montage positions.
+    """
+
+    return load_subject_info_with_channel_drop(subject_id, cfg)
 
 
 def save_pattern_expression_tables(

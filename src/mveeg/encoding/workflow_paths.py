@@ -27,3 +27,38 @@ def prepare_encoding_paths(
     }
 
 
+def infer_experiment_settings(
+    data_dir: str | Path,
+    experiment_name: str | None,
+    results_subdir: str | None,
+) -> tuple[str, str]:
+    """Fill in experiment-specific encoding settings from the data folder.
+
+    Parameters
+    ----------
+    data_dir : str | Path
+        Preprocessed data folder for the current experiment, such as
+        ``data/preprocessed/exp2``.
+    experiment_name : str | None
+        Experiment label used to find derivative files. If ``None``, the final
+        folder name from ``data_dir`` is used.
+    results_subdir : str | None
+        Folder name written below ``results``. If ``None``, the final folder
+        name from ``data_dir`` is used.
+
+    Returns
+    -------
+    tuple[str, str]
+        Experiment label and results subdirectory used by the encoding helpers.
+    """
+
+    data_dir = Path(data_dir)
+    inferred_name = data_dir.name
+
+    if experiment_name is None:
+        experiment_name = inferred_name
+    if results_subdir is None:
+        results_subdir = inferred_name
+
+    return experiment_name, results_subdir
+

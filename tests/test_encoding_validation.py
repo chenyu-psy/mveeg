@@ -1,6 +1,9 @@
 """Tests for encoding design validation helpers."""
 
+import mne
 import numpy as np
+import pandas as pd
+import pytest
 
 from mveeg.encoding.workflow import (
     export_encoding_outputs,
@@ -12,6 +15,10 @@ from mveeg.encoding.workflow import (
     validate_glm_formula,
 )
 from mveeg.encoding.workflow_model import _saved_result_matches_current_settings
+from mveeg.encoding.workflow_outputs import (
+    build_encoding_topography_value_table,
+    export_encoding_model_outputs,
+)
 from mveeg.encoding.validation import validate_encoding
 
 
@@ -70,6 +77,271 @@ def test_prepare_encoding_paths_uses_general_defaults(tmp_path):
     assert paths["log_path"].name == "encoding.log"
 
 
+def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
+    """Public encoding facade should convert grouped settings to workflow args."""
+    from mveeg.encoding import workflow
+
+    captured = {}
+
+    def fake_run_encoding_workflow(**kwargs):
+        captured.update(kwargs)
+        return {
+            "subject_summary_df": pd.DataFrame({"subject": ["001", "002"]}),
+            "skipped_subjects_df": pd.DataFrame(columns=["subject", "reason"]),
+        }
+
+    monkeypatch.setattr(workflow, "run_encoding_workflow", fake_run_encoding_workflow)
+    condition_encoding = pd.DataFrame(
+        {
+            "condition": ["same", "new"],
+            "item": [1.0, 0.0],
+        }
+    )
+
+    result = workflow.run_encoding(
+        base_dir=tmp_path,
+        data_dir=tmp_path / "data" / "preprocessed" / "exp1",
+        subject_ids=["001", "002"],
+        trial_filters={
+            "qc_col": "final_qc_category",
+            "keep_qc": ["accepted"],
+            "exclude_metadata": None,
+        },
+        encoding_params={
+            "crop_time": (1.7, 2.8),
+            "time_window_ms": 50,
+            "drop_channel_types": ("eog",),
+            "drop_channels": (),
+            "n_splits": 2,
+            "shuffle": False,
+            "random_state": 1,
+            "n_null_repeats": 3,
+        },
+        condition_encoding=condition_encoding,
+        condition_label_map={"same": ["correct"], "new": ["new"]},
+        glm_formula="~ 1 + item",
+        overwrite=False,
+        name="probe_encoding",
+        topography={"time_window_ms": (1900, 2800)},
+    )
+
+    assert captured["source_to_condition"] == {"correct": "same", "new": "new"}
+    assert captured["loader_cfg"].dataset.experiment_name == "exp1"
+    assert captured["loader_cfg"].conditions.cond_col == "label"
+    assert captured["cv_n_splits"] == 2
+    assert captured["cv_shuffle"] is False
+    assert captured["topography"] == {"time_window_ms": (1900, 2800)}
+    assert result["summary_df"]["n_subjects_completed"].tolist() == [2]
+
+
+def test_build_encoding_topography_value_table_exports_all_predictors():
+    """Encoding topography should summarize every saved predictor map."""
+    payloads = {
+        "001": _make_topography_payload(raw_offset=0.0),
+        "002": _make_topography_payload(raw_offset=10.0),
+    }
+
+    table = build_encoding_topography_value_table(
+        subject_payloads=payloads,
+        time_window_ms=(0, 50),
+    )
+
+    assert table.columns.tolist() == [
+        "channel",
+        "effect",
+        "raw_value",
+        "z_value",
+        "window_start_ms",
+        "window_end_ms",
+        "n_subjects",
+    ]
+    assert table["effect"].tolist() == ["intercept", "intercept", "item", "item"]
+    assert table["channel"].tolist() == ["Fz", "Cz", "Fz", "Cz"]
+    assert table["raw_value"].tolist() == [8.0, 10.0, 16.0, 18.0]
+    assert table["z_value"].tolist() == [-1.0, 1.0, -1.0, 1.0]
+    assert table["window_start_ms"].tolist() == [0, 0, 0, 0]
+    assert table["window_end_ms"].tolist() == [50, 50, 50, 50]
+    assert table["n_subjects"].tolist() == [2, 2, 2, 2]
+
+
+def test_build_encoding_topography_value_table_exports_named_windows():
+    """Named topography windows should be exported in the requested order."""
+    payloads = {
+        "001": _make_topography_payload(raw_offset=0.0),
+        "002": _make_topography_payload(raw_offset=10.0),
+    }
+
+    table = build_encoding_topography_value_table(
+        subject_payloads=payloads,
+        time_windows_ms={
+            "early": (0, 50),
+            "late": (100, 100),
+        },
+    )
+
+    assert table.columns.tolist() == [
+        "channel",
+        "effect",
+        "window_name",
+        "raw_value",
+        "z_value",
+        "window_start_ms",
+        "window_end_ms",
+        "n_subjects",
+    ]
+    assert table["window_name"].tolist() == ["early"] * 4 + ["late"] * 4
+    assert table["effect"].tolist() == [
+        "intercept",
+        "intercept",
+        "item",
+        "item",
+        "intercept",
+        "intercept",
+        "item",
+        "item",
+    ]
+    assert table["channel"].tolist() == ["Fz", "Cz", "Fz", "Cz"] * 2
+    assert table["raw_value"].tolist() == [
+        8.0,
+        10.0,
+        16.0,
+        18.0,
+        104.0,
+        104.0,
+        104.0,
+        104.0,
+    ]
+    assert table["z_value"].tolist() == [
+        -1.0,
+        1.0,
+        -1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ]
+    assert table["window_start_ms"].tolist() == [0, 0, 0, 0, 100, 100, 100, 100]
+    assert table["window_end_ms"].tolist() == [50, 50, 50, 50, 100, 100, 100, 100]
+
+
+def test_build_encoding_topography_value_table_rejects_bad_windows():
+    """Invalid windows should fail before writing misleading topography files."""
+    payloads = {"001": _make_topography_payload(raw_offset=0.0)}
+
+    with pytest.raises(ValueError, match="start must be <= end"):
+        build_encoding_topography_value_table(
+            subject_payloads=payloads,
+            time_windows_ms={"bad": (50, 0)},
+        )
+
+    with pytest.raises(ValueError, match="No encoding beta pattern time bins"):
+        build_encoding_topography_value_table(
+            subject_payloads=payloads,
+            time_windows_ms={"empty": (200, 300)},
+        )
+
+
+def test_export_encoding_model_outputs_writes_topography_csvs(tmp_path, monkeypatch):
+    """Encoding export should write R-ready variable topography CSV files."""
+    from mveeg.encoding import workflow_outputs
+
+    info = mne.create_info(["Fz", "Cz"], sfreq=250, ch_types="eeg")
+    info.set_montage("standard_1020")
+    monkeypatch.setattr(
+        workflow_outputs,
+        "load_subject_info",
+        lambda _subject, _cfg: info,
+    )
+
+    output_files = {
+        "training_pattern_strength": "training_pattern_strength.csv",
+        "testing_effect_coefficients": "testing_effect_coefficients.csv",
+        "testing_effect_coefficients_wide": "testing_effect_coefficients_wide.csv",
+        "condition_average_coefficients": "condition_average_coefficients.csv",
+        "subject_summary": "subject_summary.csv",
+        "run_summary": "run_summary.csv",
+        "skipped_subjects": "skipped_subjects.csv",
+        "topography_values": "topography/topography_values.csv",
+        "topography_coords": "topography/topography_coords.csv",
+    }
+    outputs = export_encoding_model_outputs(
+        output_dir=tmp_path,
+        output_files=output_files,
+        subject_summary_df=pd.DataFrame({"subject": ["001"]}),
+        skipped_subjects_df=pd.DataFrame(columns=["subject", "reason"]),
+        run_summary_df=pd.DataFrame({"name": ["run"]}),
+        training_pattern_strength_df=pd.DataFrame({"subject": ["001"]}),
+        testing_coefficient_df=pd.DataFrame({"subject": ["001"]}),
+        testing_coefficient_wide_df=pd.DataFrame({"subject": ["001"]}),
+        condition_coefficient_df=pd.DataFrame({"subject": ["001"]}),
+        config_payload={"run_name": "run"},
+        topography={"time_window_ms": (0, 50)},
+        subject_payloads={"001": _make_topography_payload(raw_offset=0.0)},
+        loader_cfg=object(),
+    )
+
+    assert (tmp_path / "topography" / "topography_values.csv").exists()
+    assert (tmp_path / "topography" / "topography_coords.csv").exists()
+    assert outputs["topography_values_df"]["effect"].tolist() == [
+        "intercept",
+        "intercept",
+        "item",
+        "item",
+    ]
+
+
+def test_export_encoding_model_outputs_writes_named_topography_windows(tmp_path, monkeypatch):
+    """Encoding export should preserve names for multi-window topography CSVs."""
+    from mveeg.encoding import workflow_outputs
+
+    info = mne.create_info(["Fz", "Cz"], sfreq=250, ch_types="eeg")
+    info.set_montage("standard_1020")
+    monkeypatch.setattr(
+        workflow_outputs,
+        "load_subject_info",
+        lambda _subject, _cfg: info,
+    )
+
+    output_files = {
+        "training_pattern_strength": "training_pattern_strength.csv",
+        "testing_effect_coefficients": "testing_effect_coefficients.csv",
+        "testing_effect_coefficients_wide": "testing_effect_coefficients_wide.csv",
+        "condition_average_coefficients": "condition_average_coefficients.csv",
+        "subject_summary": "subject_summary.csv",
+        "run_summary": "run_summary.csv",
+        "skipped_subjects": "skipped_subjects.csv",
+        "topography_values": "topography/topography_values.csv",
+        "topography_coords": "topography/topography_coords.csv",
+    }
+    outputs = export_encoding_model_outputs(
+        output_dir=tmp_path,
+        output_files=output_files,
+        subject_summary_df=pd.DataFrame({"subject": ["001"]}),
+        skipped_subjects_df=pd.DataFrame(columns=["subject", "reason"]),
+        run_summary_df=pd.DataFrame({"name": ["run"]}),
+        training_pattern_strength_df=pd.DataFrame({"subject": ["001"]}),
+        testing_coefficient_df=pd.DataFrame({"subject": ["001"]}),
+        testing_coefficient_wide_df=pd.DataFrame({"subject": ["001"]}),
+        condition_coefficient_df=pd.DataFrame({"subject": ["001"]}),
+        config_payload={"run_name": "run"},
+        topography={
+            "time_windows_ms": {
+                "early": (0, 50),
+                "late": (100, 100),
+            }
+        },
+        subject_payloads={"001": _make_topography_payload(raw_offset=0.0)},
+        loader_cfg=object(),
+    )
+
+    saved_df = pd.read_csv(tmp_path / "topography" / "topography_values.csv")
+    assert saved_df["window_name"].tolist() == ["early"] * 4 + ["late"] * 4
+    assert outputs["topography_values_df"]["window_name"].tolist() == [
+        "early"
+    ] * 4 + ["late"] * 4
+
+
 def test_validate_glm_formula_parses_additive_terms():
     """Formula parsing should keep the supported additive model explicit."""
     parsed = validate_glm_formula("~ 0 + load + cue", allowed_predictors={"load", "cue"})
@@ -122,4 +394,29 @@ def _make_saved_encoding_payload():
         "source_condition_keys": np.asarray(["raw_a", "raw_b"], dtype=object),
         "source_condition_values": np.asarray(["A", "B"], dtype=object),
         "train_condition_labels": np.asarray(["A"], dtype=object),
+    }
+
+
+def _make_topography_payload(raw_offset: float) -> dict[str, np.ndarray]:
+    """Build a small saved encoding payload with fold/predictor/channel/time betas."""
+
+    base = np.asarray(
+        [
+            [
+                [[1.0, 3.0, 99.0], [3.0, 5.0, 99.0]],
+                [[9.0, 11.0, 99.0], [11.0, 13.0, 99.0]],
+            ],
+            [
+                [[3.0, 5.0, 99.0], [5.0, 7.0, 99.0]],
+                [[11.0, 13.0, 99.0], [13.0, 15.0, 99.0]],
+            ],
+        ],
+        dtype=float,
+    )
+    return {
+        "subject": np.asarray("001", dtype=object),
+        "times_s": np.asarray([0.0, 0.05, 0.10], dtype=float),
+        "ch_names": np.asarray(["Fz", "Cz"], dtype=object),
+        "predictor_names": np.asarray(["intercept", "item"], dtype=object),
+        "raw_beta_patterns": base + float(raw_offset),
     }

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import pandas as pd
-from tqdm.auto import tqdm
 
+from .._shared.workflow_subjects import process_subjects
 from .io import (
     CONDITION_OUTPUT_FILENAME,
     README_FILENAME,
@@ -39,95 +38,89 @@ def run_pattern_expression_workflow(
     overwrite: bool = True,
     log_path: str | Path | None = None,
 ) -> dict[str, object]:
-    """Run pattern-expression export across requested subjects."""
+    """Run pattern-expression export across requested subjects.
+
+    Parameters
+    ----------
+    subject_ids : list[str]
+        Subject IDs requested by the caller.
+    subject_inputs : dict[str, dict[str, object]]
+        Per-subject arrays used to build trial- and condition-level expression
+        tables.
+    subject_results_dir : str | Path
+        Folder used for per-subject cache files.
+    overwrite : bool
+        Whether to rebuild subjects that already have saved cache files.
+    log_path : str | Path | None
+        Optional detailed log path.
+
+    Returns
+    -------
+    dict[str, object]
+        Trial summary, skipped subjects, trial expression, and condition
+        expression tables.
+    """
 
     trial_tables = {}
     condition_tables = {}
     trial_summary_rows = []
-    skipped_subjects = []
 
-    subject_bars = {}
-    for bar_ix, subject_id in enumerate(subject_ids):
-        subject_bars[subject_id] = tqdm(
-            total=1,
-            desc=f"sub-{subject_id}",
-            unit="step",
-            position=bar_ix,
-            leave=True,
-        )
+    def process_one_subject(subject_id: str, progress_bar):
+        """Export or reuse one subject and update the shared progress bar."""
 
-    log_file = None
-    if log_path is not None:
-        log_path = Path(log_path)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_path, "w", encoding="utf-8")
-        log_file.write("Encoding export run\n")
-        log_file.write(f"Subjects requested: {len(subject_ids)}\n\n")
-
-    try:
-        for subject_id in subject_ids:
-            subject_bar = subject_bars[subject_id]
-            try:
-                used_saved_result = False
-                if not overwrite and subject_result_exists(subject_results_dir, subject_id):
-                    subject_saved = load_saved_subject_results(subject_results_dir, subject_id)
-                    trial_table = subject_saved["trial_table"]
-                    condition_table = subject_saved["condition_table"]
-                    used_saved_result = True
-                else:
-                    if subject_id not in subject_inputs:
-                        raise KeyError(
-                            "Missing subject input bundle. "
-                            f"Expected key '{subject_id}' in subject_inputs."
-                        )
-
-                    if log_file is None:
-                        trial_table, condition_table = _run_single_subject_export(
-                            subject_id=subject_id,
-                            subject_input=subject_inputs[subject_id],
-                            subject_results_dir=subject_results_dir,
-                        )
-                    else:
-                        with redirect_stdout(log_file), redirect_stderr(log_file):
-                            trial_table, condition_table = _run_single_subject_export(
-                                subject_id=subject_id,
-                                subject_input=subject_inputs[subject_id],
-                                subject_results_dir=subject_results_dir,
-                            )
-
-                trial_tables[subject_id] = trial_table
-                condition_tables[subject_id] = condition_table
-                trial_summary_rows.append(
-                    {
-                        "subject": str(subject_id),
-                        "n_trial_rows": int(len(trial_table)),
-                        "n_condition_rows": int(len(condition_table)),
-                    }
+        used_saved_result = False
+        if not overwrite and subject_result_exists(subject_results_dir, subject_id):
+            subject_saved = load_saved_subject_results(subject_results_dir, subject_id)
+            trial_table = subject_saved["trial_table"]
+            condition_table = subject_saved["condition_table"]
+            used_saved_result = True
+        else:
+            if subject_id not in subject_inputs:
+                raise KeyError(
+                    "Missing subject input bundle. "
+                    f"Expected key '{subject_id}' in subject_inputs."
                 )
 
-                subject_bar.update(1)
-                subject_bar.set_postfix_str("reused" if used_saved_result else "done")
-            except Exception as err:
-                skipped_subjects.append({"subject": str(subject_id), "reason": str(err)})
-                subject_bar.set_postfix_str("failed")
-                print(f"sub-{subject_id} failed: {err}")
-                if log_file is not None:
-                    log_file.write(f"sub-{subject_id} failed: {err}\n")
-    finally:
-        for subject_bar in subject_bars.values():
-            subject_bar.close()
-        if log_file is not None:
-            log_file.close()
+            trial_table, condition_table = _run_single_subject_export(
+                subject_id=subject_id,
+                subject_input=subject_inputs[subject_id],
+                subject_results_dir=subject_results_dir,
+            )
+
+        trial_tables[subject_id] = trial_table
+        condition_tables[subject_id] = condition_table
+        trial_summary_rows.append(
+            {
+                "subject": str(subject_id),
+                "n_trial_rows": int(len(trial_table)),
+                "n_condition_rows": int(len(condition_table)),
+            }
+        )
+
+        progress_bar.update(1)
+        return (trial_table, condition_table), used_saved_result
+
+    skipped_subjects_df = process_subjects(
+        subject_ids=[str(subject_id) for subject_id in subject_ids],
+        progress_total=1,
+        log_label="Encoding pattern-expression run",
+        log_path=log_path,
+        experiment_name="encoding",
+        process_one_subject=process_one_subject,
+    )
 
     if len(trial_tables) == 0:
-        skipped_summary = pd.DataFrame(skipped_subjects)
+        skipped_summary = (
+            skipped_subjects_df
+            if len(skipped_subjects_df) > 0
+            else pd.DataFrame(columns=["subject", "reason"])
+        )
         raise RuntimeError(
             "No subjects were successfully exported.\n"
             f"Failure summary:\n{skipped_summary.to_string(index=False)}"
         )
 
     trial_summary_df = pd.DataFrame(trial_summary_rows).sort_values("subject").reset_index(drop=True)
-    skipped_subjects_df = pd.DataFrame(skipped_subjects)
 
     trial_expression_df = pd.concat(list(trial_tables.values()), ignore_index=True)
     trial_expression_df = trial_expression_df.sort_values(
@@ -204,5 +197,3 @@ def _run_single_subject_export(
     )
 
     return trial_table, condition_table
-
-
