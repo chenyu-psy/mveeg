@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .._shared.topography import save_window_topography_set
+from .._shared.topography import build_topography_coord_table
 from .config import DecodingConfig
 from .io import load_subject_info
 from .summaries import (
@@ -23,8 +23,11 @@ CORE_OUTPUT_FILES = {
     "generalization_accuracy_cv": "acc_generalization_cv.csv",
     "hyperplane_subject": "dist_subject.csv",
     "skipped_subjects": "skipped.csv",
-    "topography_manifest": "topo_manifest.csv",
+    "topography_values": "topography_values.csv",
+    "topography_coords": "topography_coords.csv",
 }
+
+TOPOGRAPHY_EFFECT_LABEL = "Decoding pattern"
 
 
 def _build_decoding_run_output(
@@ -135,19 +138,35 @@ def export_decoding_outputs(
     run_output: dict[str, object],
     cfg: DecodingConfig,
     results_dir: str | Path,
-    figures_dir: str | Path,
     topo_windows_ms: dict[str, tuple[int, int]],
 ) -> pd.DataFrame:
-    """Save summary tables and topographies for one completed decoding run."""
+    """Save summary tables and R-ready topography data for one decoding run.
+
+    Parameters
+    ----------
+    run_output : dict[str, object]
+        Completed decoding outputs returned by ``run_decoding_workflow``.
+    cfg : DecodingConfig
+        Decoding configuration used to load the matched channel coordinates.
+    results_dir : str | Path
+        Folder where group-level decoding tables are written.
+    topo_windows_ms : dict[str, tuple[int, int]]
+        Named time windows exported as channel-value summaries for R plotting.
+
+    Returns
+    -------
+    pd.DataFrame
+        Channel-value table written to ``topography_values.csv``.
+    """
 
     results_dir = Path(results_dir)
-    figures_dir = Path(figures_dir)
 
     trial_summary_df = run_output["trial_summary_df"]
     skipped_subjects_df = run_output["skipped_subjects_df"]
     accuracy_df = run_output["accuracy_df"]
     hyperplane_df = run_output["hyperplane_df"]
     pattern_df = run_output["pattern_df"]
+    reference_ch_names = run_output["reference_ch_names"]
     topography_subject_id = run_output["topography_subject_id"]
 
     trial_summary_df.to_csv(results_dir / CORE_OUTPUT_FILES["trial_summary"], index=False)
@@ -161,27 +180,105 @@ def export_decoding_outputs(
         if skipped_path.exists():
             skipped_path.unlink()
 
-    group_pattern_df = (
-        pattern_df.groupby(["channel", "time_ms"], as_index=False)["value"]
-        .mean()
-        .sort_values(["channel", "time_ms"])
-        .reset_index(drop=True)
+    topography_values_df = build_topography_value_table(
+        pattern_df=pattern_df,
+        windows_ms=topo_windows_ms,
     )
     topo_info = load_subject_info(topography_subject_id, cfg)
-    topography_df = save_window_topography_set(
-        channel_df=group_pattern_df,
+    topography_coords_df = build_topography_coord_table(
         info=topo_info,
-        output_dir=figures_dir,
-        windows_ms=topo_windows_ms,
-        value_col="value",
-        filename_prefix="topo",
-        title_prefix=None,
-        colorbar_label="Z-scored pattern",
-        zscore_within_window=True,
+        channels=reference_ch_names,
     )
-    topography_df.to_csv(results_dir / CORE_OUTPUT_FILES["topography_manifest"], index=False)
-    return topography_df
+    topography_values_df.to_csv(
+        results_dir / CORE_OUTPUT_FILES["topography_values"],
+        index=False,
+    )
+    topography_coords_df.to_csv(
+        results_dir / CORE_OUTPUT_FILES["topography_coords"],
+        index=False,
+    )
+    return topography_values_df
 
+
+def build_topography_value_table(
+    *,
+    pattern_df: pd.DataFrame,
+    windows_ms: dict[str, tuple[int, int]],
+) -> pd.DataFrame:
+    """Summarize decoding channel patterns for R topography plotting.
+
+    Parameters
+    ----------
+    pattern_df : pd.DataFrame
+        Long decoding pattern table with ``subject``, ``channel``,
+        ``time_ms``, and ``value`` columns.
+    windows_ms : dict[str, tuple[int, int]]
+        Named time windows in milliseconds.
+
+    Returns
+    -------
+    pd.DataFrame
+        Table with one row per channel and requested time window. ``raw_value``
+        is the group mean channel pattern, and ``z_value`` is z-scored across
+        channels within the same window.
+    """
+
+    required_cols = {"subject", "channel", "time_ms", "value"}
+    missing_cols = sorted(required_cols.difference(pattern_df.columns))
+    if len(missing_cols) > 0:
+        raise ValueError(f"pattern_df is missing required columns: {missing_cols}")
+
+    rows = []
+    for _window_name, (start_ms, end_ms) in windows_ms.items():
+        window_mask = pattern_df["time_ms"].between(start_ms, end_ms, inclusive="both")
+        window_df = pattern_df.loc[window_mask].copy()
+        if len(window_df) == 0:
+            raise ValueError(
+                f"No decoding pattern values were found between {start_ms} ms and {end_ms} ms."
+            )
+
+        subject_channel_df = (
+            window_df.groupby(["subject", "channel"], as_index=False)["value"]
+            .mean()
+            .rename(columns={"value": "subject_value"})
+        )
+        n_subjects = int(subject_channel_df["subject"].nunique())
+        group_df = (
+            subject_channel_df.groupby("channel", as_index=False)["subject_value"]
+            .mean()
+            .rename(columns={"subject_value": "raw_value"})
+            .sort_values("channel")
+            .reset_index(drop=True)
+        )
+
+        values = group_df["raw_value"].to_numpy(dtype=float)
+        value_std = values.std(ddof=0)
+        if value_std == 0:
+            z_values = np.zeros(len(values), dtype=float)
+        else:
+            z_values = (values - values.mean()) / value_std
+
+        group_df["effect"] = TOPOGRAPHY_EFFECT_LABEL
+        group_df["z_value"] = z_values
+        group_df["window_start_ms"] = int(start_ms)
+        group_df["window_end_ms"] = int(end_ms)
+        group_df["n_subjects"] = n_subjects
+        rows.append(
+            group_df.loc[
+                :,
+                [
+                    "channel",
+                    "effect",
+                    "raw_value",
+                    "z_value",
+                    "window_start_ms",
+                    "window_end_ms",
+                    "n_subjects",
+                ],
+            ]
+        )
+
+    return pd.concat(rows, ignore_index=True)
 
 
 def build_generalization_accuracy_table(
@@ -233,5 +330,3 @@ def build_generalization_accuracy_table(
         )
 
     return pd.concat(rows, ignore_index=True)
-
-

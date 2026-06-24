@@ -92,7 +92,8 @@ def run_decoding(
     test_conditions : dict[str, list[str]]
         Output groups kept for testing and summaries.
     topo_windows_ms : dict[str, tuple[int, int]]
-        Named time windows exported for topography summaries.
+        Named time windows exported as channel-value summaries for R
+        topography plotting.
     experiment_name : str | None
         Experiment name used to locate the derivatives files. If ``None``, the
         final folder name from ``data_dir`` is used.
@@ -166,7 +167,6 @@ def run_decoding(
         run_output=run_output,
         cfg=cfg,
         results_dir=run_paths["results_dir"],
-        figures_dir=run_paths["figures_dir"],
         topo_windows_ms=topo_windows_ms,
     )
 

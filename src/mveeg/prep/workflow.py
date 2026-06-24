@@ -9,7 +9,7 @@ its methods.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING
 
 import mne
 import numpy as np
@@ -82,6 +82,7 @@ class PreprocessWorkflow:
         self.overwrite_all = False
         self.behavior_name_pattern: str | None = None
         self.behavior_suffix: str | None = None
+        self.behavior_transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None
         self.reref_channels: tuple[str, ...] | None = None
         self.pre_filter_rules: dict | None = None
         self.post_filter_rules: dict | None = None
@@ -486,6 +487,7 @@ class PreprocessWorkflow:
         pre_filter_rules: dict | None = None,
         post_filter_rules: dict | None = None,
         manual_trial_exclusions: dict[str, dict[str, list[int]]] | None = None,
+        behavior_transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     ) -> None:
         """Store behavior-alignment and manual-fix settings for this run.
 
@@ -504,6 +506,10 @@ class PreprocessWorkflow:
             Rules used after alignment to mark which epochs should be kept.
         manual_trial_exclusions : dict[str, dict[str, list[int]]] | None, optional
             Subject-specific EEG and eye-tracker trial drops before alignment.
+        behavior_transform : callable | None, optional
+            Function applied to the loaded behavior table before pre-filtering
+            and EEG alignment. Use this to add analysis-specific metadata
+            columns while preserving the original behavior file.
 
         Returns
         -------
@@ -514,6 +520,7 @@ class PreprocessWorkflow:
             name_pattern = f"*{behavior_suffix}"
         self.behavior_name_pattern = name_pattern
         self.behavior_suffix = behavior_suffix
+        self.behavior_transform = behavior_transform
         self.pre_filter_rules = pre_filter_rules
         self.post_filter_rules = post_filter_rules
         self.manual_trial_exclusions = manual_trial_exclusions

@@ -243,7 +243,8 @@ def load_subject_data_with_filters(
     subject_id : str
         Subject identifier without the ``sub-`` prefix.
     cfg : object
-        Config-like object with dataset/filters/decode/conditions fields and a
+        Config-like object with dataset, filters, conditions, and either decode
+        or epoch fields. Decoding configs may also provide a
         ``label_for_metadata_row`` method.
     return_metadata : bool, optional
         Whether to include the filtered metadata in the returned tuple.
@@ -264,7 +265,11 @@ def load_subject_data_with_filters(
         epochs.drop_channels(chans_to_drop)
 
     if epoch_cfg.crop_time is not None:
-        epochs.crop(tmin=epoch_cfg.crop_time[0], tmax=epoch_cfg.crop_time[1], include_tmax=True)
+        epochs.crop(
+            tmin=epoch_cfg.crop_time[0],
+            tmax=epoch_cfg.crop_time[1],
+            include_tmax=True,
+        )
 
     metadata = load_subject_metadata_table(subject_id, cfg)
 
@@ -320,7 +325,7 @@ def load_subject_info_with_channel_drop(subject_id: str, cfg) -> mne.Info:
     subject_id : str
         Subject identifier without the ``sub-`` prefix.
     cfg : object
-        Config-like object with dataset and decode fields.
+        Config-like object with dataset and decode or epoch fields.
 
     Returns
     -------
@@ -328,8 +333,13 @@ def load_subject_info_with_channel_drop(subject_id: str, cfg) -> mne.Info:
         Channel info aligned with downstream analysis data.
     """
 
-    epochs = mne.read_epochs(epochs_path_for_subject(subject_id, cfg.dataset), preload=True, verbose="ERROR")
-    chans_to_drop = channels_to_drop_by_rule(epochs, cfg.decode)
+    epochs = mne.read_epochs(
+        epochs_path_for_subject(subject_id, cfg.dataset),
+        preload=True,
+        verbose="ERROR",
+    )
+    epoch_cfg = cfg.decode if hasattr(cfg, "decode") else cfg.epoch
+    chans_to_drop = channels_to_drop_by_rule(epochs, epoch_cfg)
     if len(chans_to_drop) > 0:
         epochs.drop_channels(chans_to_drop)
     return epochs.info.copy()

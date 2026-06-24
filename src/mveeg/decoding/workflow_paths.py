@@ -27,23 +27,20 @@ def prepare_decoding_paths(
     Returns
     -------
     dict[str, Path]
-        Standard result, figure, and log paths for one decoding run.
+        Standard result and log paths for one decoding run.
     """
 
     base_dir = Path(base_dir)
     results_dir = base_dir / "results" / results_subdir / "decoding" / run_name
     subject_results_dir = results_dir / "subject_level"
-    figures_dir = results_dir / "figures"
     log_path = results_dir / "decoding.log"
 
     results_dir.mkdir(parents=True, exist_ok=True)
     subject_results_dir.mkdir(parents=True, exist_ok=True)
-    figures_dir.mkdir(parents=True, exist_ok=True)
 
     return {
         "results_dir": results_dir,
         "subject_results_dir": subject_results_dir,
-        "figures_dir": figures_dir,
         "log_path": log_path,
     }
 
@@ -101,5 +98,4 @@ def infer_experiment_settings(
         results_subdir = inferred_name
 
     return experiment_name, results_subdir
-
 

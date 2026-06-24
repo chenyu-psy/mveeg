@@ -1,5 +1,6 @@
 """Tests for lightweight decoding helper functions."""
 
+import mne
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
@@ -24,6 +25,10 @@ from mveeg.decoding.workflow import (
     run_generalization_decoding,
     run_generalization_workflow,
     save_decoding_config,
+)
+from mveeg.decoding.workflow_outputs import (
+    build_topography_coord_table,
+    build_topography_value_table,
 )
 from mveeg.decoding.workflow_subjects import _build_subject_run_plan
 
@@ -72,6 +77,7 @@ def test_prepare_decoding_paths_uses_general_defaults(tmp_path):
 
     assert paths["results_dir"] == tmp_path / "results" / "main" / "decoding" / "run_a"
     assert paths["log_path"].name == "decoding.log"
+    assert "figures_dir" not in paths
 
 
 def test_decoding_workflow_facade_keeps_public_imports():
@@ -118,6 +124,126 @@ def test_build_subject_run_plan_keeps_cached_partial_outputs():
     assert plan["subjects_to_process"] == ["002", "003"]
     assert plan["keep_seed_subjects"] == ["001", "002", "003"]
     assert plan["is_full_run"] is False
+
+
+def test_build_topography_value_table_averages_and_z_scores_windows():
+    """Topography value export should match WT13-style R plotting inputs."""
+    pattern_df = pd.DataFrame(
+        {
+            "subject": ["001", "001", "001", "001", "002", "002", "002", "002"],
+            "channel": ["Fz", "Fz", "Cz", "Cz", "Fz", "Fz", "Cz", "Cz"],
+            "time_ms": [0, 50, 0, 50, 0, 50, 0, 50],
+            "value": [1.0, 3.0, 3.0, 5.0, 5.0, 7.0, 7.0, 9.0],
+        }
+    )
+
+    table = build_topography_value_table(
+        pattern_df=pattern_df,
+        windows_ms={"early": (0, 50)},
+    )
+
+    assert table.columns.tolist() == [
+        "channel",
+        "effect",
+        "raw_value",
+        "z_value",
+        "window_start_ms",
+        "window_end_ms",
+        "n_subjects",
+    ]
+    assert table["channel"].tolist() == ["Cz", "Fz"]
+    assert table["effect"].tolist() == ["Decoding pattern", "Decoding pattern"]
+    assert table["raw_value"].tolist() == [6.0, 4.0]
+    assert table["z_value"].tolist() == [1.0, -1.0]
+    assert table["window_start_ms"].tolist() == [0, 0]
+    assert table["window_end_ms"].tolist() == [50, 50]
+    assert table["n_subjects"].tolist() == [2, 2]
+
+
+def test_build_topography_value_table_rejects_empty_windows():
+    """Requested windows with no data should fail before R plotting."""
+    pattern_df = pd.DataFrame(
+        {
+            "subject": ["001"],
+            "channel": ["Fz"],
+            "time_ms": [0],
+            "value": [1.0],
+        }
+    )
+
+    try:
+        build_topography_value_table(
+            pattern_df=pattern_df,
+            windows_ms={"missing": (100, 200)},
+        )
+    except ValueError as err:
+        assert "No decoding pattern values" in str(err)
+    else:
+        raise AssertionError("Expected empty topography window to raise ValueError.")
+
+
+def test_build_topography_coord_table_exports_projected_mne_positions():
+    """Coordinate export should produce finite millimeter x/y values for R."""
+    info = mne.create_info(["Fz", "Cz"], sfreq=250, ch_types="eeg")
+    info.set_montage("standard_1020")
+
+    table = build_topography_coord_table(info=info, channels=["Fz", "Cz"])
+
+    assert table.columns.tolist() == ["channel", "x", "y"]
+    assert table["channel"].tolist() == ["Fz", "Cz"]
+    assert np.isfinite(table["x"]).all()
+    assert np.isfinite(table["y"]).all()
+
+
+def test_build_topography_coord_table_rejects_missing_positions():
+    """Coordinate export should fail clearly when epochs lack a montage."""
+    info = mne.create_info(["Fz", "Cz"], sfreq=250, ch_types="eeg")
+
+    try:
+        build_topography_coord_table(info=info, channels=["Fz", "Cz"])
+    except ValueError as err:
+        assert "electrode montage positions" in str(err)
+    else:
+        raise AssertionError("Expected missing montage positions to raise ValueError.")
+
+
+def test_export_decoding_outputs_writes_r_ready_topography_csvs(tmp_path, monkeypatch):
+    """Decoding export should write CSV topography data instead of PNG manifests."""
+    from mveeg.decoding import workflow_outputs
+
+    info = mne.create_info(["Fz", "Cz"], sfreq=250, ch_types="eeg")
+    info.set_montage("standard_1020")
+    monkeypatch.setattr(workflow_outputs, "load_subject_info", lambda _subject, _cfg: info)
+
+    run_output = {
+        "trial_summary_df": pd.DataFrame({"subject": ["001"]}),
+        "skipped_subjects_df": pd.DataFrame(columns=["subject", "reason"]),
+        "accuracy_df": pd.DataFrame({"subject": ["001"], "accuracy": [0.5]}),
+        "hyperplane_df": pd.DataFrame({"subject": ["001"], "distance": [0.1]}),
+        "pattern_df": pd.DataFrame(
+            {
+                "subject": ["001", "001"],
+                "channel": ["Fz", "Cz"],
+                "time_ms": [0, 0],
+                "value": [1.0, 3.0],
+            }
+        ),
+        "reference_ch_names": ["Fz", "Cz"],
+        "topography_subject_id": "001",
+    }
+
+    topography_df = export_decoding_outputs(
+        run_output=run_output,
+        cfg=_make_decoding_config(tmp_path),
+        results_dir=tmp_path,
+        topo_windows_ms={"early": (0, 0)},
+    )
+
+    assert (tmp_path / "topography_values.csv").exists()
+    assert (tmp_path / "topography_coords.csv").exists()
+    assert not (tmp_path / "topo_manifest.csv").exists()
+    assert topography_df["channel"].tolist() == ["Cz", "Fz"]
+    assert topography_df["z_value"].tolist() == [1.0, -1.0]
 
 
 def _make_decoding_config(tmp_path):

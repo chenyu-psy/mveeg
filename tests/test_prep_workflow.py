@@ -1,5 +1,8 @@
 """Tests for general preprocessing workflow defaults and facade imports."""
 
+import mne
+import numpy as np
+import pandas as pd
 import pytest
 
 from mveeg.prep.core import EpochConfig, EventConfig, IOConfig, Preprocess
@@ -42,6 +45,21 @@ def test_configure_behavior_maps_legacy_suffix():
 
     assert flow.behavior_name_pattern == "*_beh.csv"
     assert flow.behavior_suffix == "_beh.csv"
+
+
+def test_configure_behavior_stores_transform():
+    """configure_behavior should store an optional behavior transform."""
+    flow = PreprocessWorkflow()
+
+    def add_column(behavior_data):
+        """Return behavior rows with an added marker column."""
+        behavior_data = behavior_data.copy()
+        behavior_data["marker"] = "ok"
+        return behavior_data
+
+    flow.configure_behavior(name_pattern="*_beh.csv", behavior_transform=add_column)
+
+    assert flow.behavior_transform is add_column
 
 
 def test_workflow_facade_keeps_public_imports():
@@ -117,6 +135,54 @@ def test_prepare_subject_epochs_skips_behavior_alignment_by_default(monkeypatch)
     assert called["align"] is False
 
 
+def test_load_subject_streams_applies_behavior_transform(monkeypatch):
+    """Behavior transforms should run before pre-filtering and alignment."""
+    flow = PreprocessWorkflow()
+    flow.behavior_name_pattern = "*_beh.csv"
+    flow.pre_filter_rules = {"trial_types": ["exp"], "rejection": "no"}
+
+    behavior_rows = pd.DataFrame(
+        {
+            "trial_type": ["exp", "pra"],
+            "rejection": ["no", "no"],
+            "label": ["A", "B"],
+        }
+    )
+
+    class DummyPre:
+        """Minimal preprocessor stand-in for stream loading."""
+
+        def import_eeg(self, subject_number, overwrite=True):
+            """Return dummy EEG data and events."""
+            return "eeg", "events"
+
+        def import_eyetracker(self, subject_number, overwrite=True):
+            """Signal that no eye-tracking file is available."""
+            raise FileNotFoundError("no eye")
+
+        def import_behavior(self, subject_number, name_pattern):
+            """Record behavior import without writing files."""
+            return None
+
+        def load_behavior_table(self, subject_number, name_pattern):
+            """Return behavior rows that need a transform before filtering."""
+            return behavior_rows
+
+    def add_marker(behavior_data):
+        """Add a column before workflow pre-filters rows."""
+        behavior_data = behavior_data.copy()
+        behavior_data["marker"] = behavior_data["label"].str.lower()
+        return behavior_data
+
+    flow.pre = DummyPre()
+    flow.behavior_transform = add_marker
+
+    _, _, _, _, _, behavior_data = workflow_subjects.load_subject_streams(flow, "sub-001")
+
+    assert behavior_data["label"].tolist() == ["A"]
+    assert behavior_data["marker"].tolist() == ["a"]
+
+
 def test_behavior_file_matching_uses_glob_and_subject_label(tmp_path):
     """Behavior lookup should support prefix/suffix-like glob patterns."""
     pre = _make_minimal_preprocess(tmp_path)
@@ -153,6 +219,46 @@ def test_behavior_file_matching_reports_missing_file(tmp_path):
         pre._find_behavior_file("001", "*_beh.csv")
 
 
+def test_eyelink_fallback_reads_numeric_event_messages(tmp_path):
+    """EyeLink fallback parsing should keep numeric task event messages."""
+    pre = _make_exp2_event_preprocess(tmp_path)
+    asc_path = _write_minimal_asc(tmp_path, ["MSG\t100\t21", "MSG\t200\tDISPLAY_COORDS 0 0 1920 1080"])
+
+    eye = pre._read_eyelink_ascii_fallback(asc_path)
+
+    assert eye.annotations.description.tolist() == ["21"]
+
+
+def test_eyelink_fallback_reads_label_event_messages(tmp_path):
+    """EyeLink fallback parsing should map configured label messages to codes."""
+    pre = _make_exp2_event_preprocess(tmp_path)
+    asc_path = _write_minimal_asc(tmp_path, ["MSG\t100\t2C1N", "MSG\t200\tDELAY"])
+
+    eye = pre._read_eyelink_ascii_fallback(asc_path)
+
+    assert eye.annotations.description.tolist() == ["21", "2"]
+
+
+def test_import_eyetracker_reports_no_task_events(tmp_path, monkeypatch):
+    """Eyetracker import should fail clearly when no task messages are present."""
+    pre = _make_exp2_event_preprocess(tmp_path)
+    eye = mne.io.RawArray(
+        np.zeros((1, 10)),
+        mne.create_info(["xpos_left"], sfreq=1000, ch_types=["eyegaze"]),
+        verbose="ERROR",
+    )
+    (tmp_path / "sub-001.asc").write_text("SAMPLES\tRATE\t1000.00\n0\t0\t0\t1\t0\t0\t1\n")
+
+    monkeypatch.setattr(pre, "_resolve_subject_dir", lambda subject_number: tmp_path)
+    monkeypatch.setattr(pre, "_convert_edf_to_asc", lambda subject_dir, subject_number: ["sub-001.asc"])
+    monkeypatch.setattr(pre, "_read_eyelink_ascii", lambda asc_path: eye)
+    monkeypatch.setattr(pre, "_copy_sidecar_template", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pre, "_warn_manual_sidecar_once", lambda: None)
+
+    with pytest.raises(ValueError, match="No task eyetracking events were found"):
+        pre.import_eyetracker("sub-001", overwrite=True)
+
+
 def _make_minimal_preprocess(tmp_path):
     """Create a minimal preprocessor for path and file-matching tests."""
     return Preprocess(
@@ -164,3 +270,38 @@ def _make_minimal_preprocess(tmp_path):
         epoch_config=EpochConfig(trial_start=-0.2, trial_end=0.8),
         event_config=EventConfig(event_dict={"A": 1}, event_code_dict={1: [1]}),
     )
+
+
+def _make_exp2_event_preprocess(tmp_path):
+    """Create a preprocessor with exp2-style event labels."""
+    event_dict = {
+        "TRIAL_START": 1,
+        "DELAY": 2,
+        "2C1N": 21,
+    }
+    return Preprocess(
+        io_config=IOConfig(
+            data_dir=tmp_path / "bids",
+            root_dir=tmp_path / "raw",
+            experiment_name="exp2",
+        ),
+        epoch_config=EpochConfig(trial_start=-0.2, trial_end=0.8),
+        event_config=EventConfig(
+            event_dict=event_dict,
+            event_code_dict={21: [1, 21, 2]},
+            event_names=event_dict,
+        ),
+    )
+
+
+def _write_minimal_asc(tmp_path, messages):
+    """Write the smallest EyeLink ASC snippet needed by the fallback parser."""
+    asc_path = tmp_path / "test.asc"
+    sample_lines = [
+        "SAMPLES\tGAZE\tLEFT\tRIGHT\tRATE\t1000.00",
+        "0\t0\t0\t1\t0\t0\t1",
+        "100\t1\t1\t1\t1\t1\t1",
+        "200\t2\t2\t1\t2\t2\t1",
+    ]
+    asc_path.write_text("\n".join(sample_lines + messages) + "\n")
+    return asc_path

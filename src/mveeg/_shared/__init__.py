@@ -14,7 +14,8 @@ from .io_filters import (
     load_subject_metadata_table,
 )
 from .time_windows import average_time_windows, build_time_windows
-from .topography import plot_scalp_topography, save_window_topography_set
+from .topography import build_topography_coord_table
+from .workflow_subjects import process_subjects
 
 __all__ = [
     "DataPathsConfig",
@@ -27,7 +28,7 @@ __all__ = [
     "load_subject_info_with_channel_drop",
     "load_subject_metadata_table",
     "average_time_windows",
+    "build_topography_coord_table",
     "build_time_windows",
-    "plot_scalp_topography",
-    "save_window_topography_set",
+    "process_subjects",
 ]

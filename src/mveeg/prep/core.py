@@ -10,6 +10,7 @@ import subprocess
 import warnings
 from pathlib import Path
 from dataclasses import dataclass
+from mne.baseline import rescale
 from ..io.bids import build_derivative_stem, build_subject_label, build_task_stem, find_subject_dir, normalize_subject_id
 
 
@@ -1132,7 +1133,8 @@ class Preprocess:
         -----
         This fallback keeps the project readable and local to Python. It only
         extracts the pieces this project needs: binocular sample rows and task
-        message markers whose last token is an integer event code.
+        message markers whose last token is either an integer event code or a
+        configured event label.
         """
         asc_path = Path(asc_path)
         sfreq = None
@@ -1140,8 +1142,10 @@ class Preprocess:
         event_onsets = []
         event_descs = []
         valid_codes = set()
+        label_to_code = {}
         if self.event_names is not None:
             valid_codes = {str(code) for code in self.event_names.values()}
+            label_to_code = {str(label): code for label, code in self.event_names.items()}
 
         with asc_path.open("r") as f:
             for line in f:
@@ -1165,12 +1169,15 @@ class Preprocess:
                     if len(msg_parts) == 0:
                         continue
                     last_token = msg_parts[-1]
-                    if valid_codes and last_token not in valid_codes:
-                        continue
-                    if not last_token.isdigit():
+                    event_code = None
+                    if last_token in valid_codes:
+                        event_code = int(last_token)
+                    elif last_token in label_to_code:
+                        event_code = int(label_to_code[last_token])
+                    if event_code is None:
                         continue
                     event_onsets.append(msg_time)
-                    event_descs.append(msg_text)
+                    event_descs.append(str(event_code))
                     continue
 
                 parts = stripped.split()
@@ -1323,6 +1330,11 @@ class Preprocess:
         keyword = "" if keyword is None else keyword
         regexp = f"^{keyword}(?![Bb][Aa][Dd]|[Ee][Dd][Gg][Ee]).*$"
         et_events, et_event_dict = mne.events_from_annotations(eye, regexp=regexp, verbose="ERROR")
+        if len(et_events) == 0:
+            raise ValueError(
+                "No task eyetracking events were found. Check that EyeLink MSG "
+                "markers use configured event labels or numeric event codes."
+            )
 
         # save sidecar
         self._copy_sidecar_template(self._raw_file_path(subject_number, "eyetracking", "eyetracking", ".json"), "TEMPLATE_eyetracking.json")
@@ -1331,8 +1343,13 @@ class Preprocess:
         # convert events to match the EEG events
 
         et_events_dict_convert = {}
+        event_label_to_code = {str(label): code for label, code in self.event_names.items()}
         for k, v in et_event_dict.items():
-            new_k = int(k.split(" ")[-1])
+            event_token = str(k).split(" ")[-1]
+            if event_token in event_label_to_code:
+                new_k = int(event_label_to_code[event_token])
+            else:
+                new_k = int(event_token)
             et_events_dict_convert[v] = new_k
         et_events_converted = et_events.copy()
         for code in et_events_dict_convert.keys():
@@ -1712,6 +1729,9 @@ class Preprocess:
 
         assert eye.info["sfreq"] % self.srate == 0
         decim = eye.info["sfreq"] / self.srate
+        eye_events_for_epochs = eye_events
+        if len(eye_trials_drop) > 0:
+            eye_events_for_epochs = np.delete(eye_events, sorted(eye_trials_drop), axis=0)
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
@@ -1720,7 +1740,7 @@ class Preprocess:
             )
             eye_epochs = mne.Epochs(
                 eye,
-                eye_events,
+                eye_events_for_epochs,
                 self.event_dict,
                 tmin=self.trial_start_t,
                 tmax=self.trial_end_t,
@@ -1732,7 +1752,13 @@ class Preprocess:
                 preload=True,
                 decim=decim,
                 verbose="ERROR",
-            ).drop(eye_trials_drop)
+            )
+
+        if self.baseline_time is not None:
+            # MNE 1.12 excludes eyetracking channels from default data picks.
+            chan_types = np.array(eye_epochs.info.get_channel_types())
+            eye_picks = np.flatnonzero(np.isin(chan_types, ["eyegaze", "pupil"]))
+            rescale(eye_epochs._data, eye_epochs.times, self.baseline_time, copy=False, picks=eye_picks)
 
         if "DIN" in eye_epochs.info["ch_names"]:
             eye_epochs.drop_channels(["DIN"])
