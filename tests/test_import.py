@@ -1,4 +1,6 @@
-"""Minimal tests that verify the package imports and placeholder helpers."""
+"""Minimal tests that verify package imports and metadata."""
+
+import tomllib
 
 import pytest
 import mveeg
@@ -9,6 +11,14 @@ def test_version_string():
     """__version__ should be a non-empty string."""
     assert isinstance(mveeg.__version__, str)
     assert mveeg.__version__ != ""
+
+
+def test_package_version_matches_project_metadata():
+    """Runtime and build metadata versions should stay synchronized."""
+    with open("pyproject.toml", "rb") as f:
+        project_version = tomllib.load(f)["project"]["version"]
+
+    assert mveeg.__version__ == project_version
 
 
 def test_subpackages_importable():
