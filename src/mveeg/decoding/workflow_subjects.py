@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import pandas as pd
-from tqdm.auto import tqdm
 
+from .._shared.workflow_subjects import process_subjects
 from .config import DecodingConfig
 from .io import (
     generalization_subject_result_exists,
@@ -125,89 +124,6 @@ def _build_subject_run_plan(
 
 
 
-def _process_subjects(
-    *,
-    subject_ids: list[str],
-    cfg: DecodingConfig,
-    progress_total: int,
-    log_label: str,
-    log_path: str | Path | None,
-    process_one_subject,
-) -> pd.DataFrame:
-    """Process one requested subject list using the provided callback.
-
-    Parameters
-    ----------
-    subject_ids : list[str]
-        Subject IDs to process during the current run.
-    cfg : DecodingConfig
-        Decoding settings for the current analysis.
-    progress_total : int
-        Total progress-bar steps per subject.
-    log_label : str
-        Short label written to the detailed log header.
-    log_path : str | Path | None
-        Optional path for the detailed technical log.
-    process_one_subject : callable
-        Callback that accepts ``(subject_id, progress_bar)`` and returns
-        ``(result_bundle, used_saved_result)``. The callback may raise to mark
-        one subject as failed.
-
-    Returns
-    -------
-    pd.DataFrame
-        Table of subjects that failed during the current run.
-    """
-
-    skipped_subjects = []
-    subject_bars = {}
-    for bar_ix, subject_id in enumerate(subject_ids):
-        subject_bars[subject_id] = tqdm(
-            total=progress_total,
-            desc=f"sub-{subject_id}",
-            unit="step",
-            position=bar_ix,
-            leave=True,
-        )
-
-    log_file = None
-    if log_path is not None:
-        log_path = Path(log_path)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_path, "w", encoding="utf-8")
-        log_file.write(f"{log_label}: {cfg.dataset.experiment_name}\n")
-        log_file.write(f"Subjects processed this run: {len(subject_ids)}\n\n")
-
-    try:
-        for subject_id in subject_ids:
-            subject_bar = subject_bars[subject_id]
-            try:
-                if log_file is None:
-                    _, used_saved_result = process_one_subject(subject_id, subject_bar)
-                else:
-                    with redirect_stdout(log_file), redirect_stderr(log_file):
-                        _, used_saved_result = process_one_subject(subject_id, subject_bar)
-
-                if used_saved_result:
-                    subject_bar.set_postfix_str("reused")
-                else:
-                    subject_bar.set_postfix_str("done")
-            except Exception as err:
-                skipped_subjects.append({"subject": subject_id, "reason": str(err)})
-                subject_bar.set_postfix_str("failed")
-                print(f"sub-{subject_id} failed: {err}")
-                if log_file is not None:
-                    log_file.write(f"sub-{subject_id} failed: {err}\n")
-    finally:
-        for subject_bar in subject_bars.values():
-            subject_bar.close()
-        if log_file is not None:
-            log_file.close()
-
-    return pd.DataFrame(skipped_subjects)
-
-
-
 def run_decoding_workflow(
     subject_ids: list[str],
     available_subject_ids: list[str],
@@ -277,12 +193,12 @@ def run_decoding_workflow(
             shared_state["reference_ch_names"] = result_bundle["ch_names"]
         return result_bundle, used_saved_result
 
-    skipped_subjects_df = _process_subjects(
+    skipped_subjects_df = process_subjects(
         subject_ids=run_plan["subjects_to_process"],
-        cfg=cfg,
         progress_total=cfg.decode.n_repeats * 2,
         log_label="Decoding run",
         log_path=log_path,
+        experiment_name=cfg.dataset.experiment_name,
         process_one_subject=process_one_subject,
     )
 
@@ -353,12 +269,12 @@ def run_generalization_workflow(
             )
         return result_bundle, used_saved_result
 
-    skipped_subjects_df = _process_subjects(
+    skipped_subjects_df = process_subjects(
         subject_ids=run_plan["subjects_to_process"],
-        cfg=cfg,
         progress_total=cfg.decode.n_repeats,
         log_label="Generalization run",
         log_path=log_path,
+        experiment_name=cfg.dataset.experiment_name,
         process_one_subject=process_one_subject,
     )
 
