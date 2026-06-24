@@ -32,6 +32,8 @@ def load_subject_streams(flow, subject_number: str):
     pre.import_behavior(subject_number, name_pattern=flow.behavior_name_pattern)
 
     behavior_data = pre.load_behavior_table(subject_number, name_pattern=flow.behavior_name_pattern)
+    if flow.behavior_transform is not None:
+        behavior_data = flow.behavior_transform(behavior_data.copy())
     if flow.pre_filter_rules is not None:
         if "trial_types" in flow.pre_filter_rules:
             behavior_data = behavior_data[behavior_data["trial_type"].isin(flow.pre_filter_rules["trial_types"])]
