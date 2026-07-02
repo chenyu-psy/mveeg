@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .._shared.topography import build_topography_coord_table
-from .io import load_subject_info, write_pattern_expression_readme
+from .io import load_subject_info, write_encoding_model_readme
 
 
 def _normalize_topography_windows(
@@ -225,10 +225,11 @@ def export_encoding_model_outputs(
     subject_summary_df: pd.DataFrame,
     skipped_subjects_df: pd.DataFrame,
     run_summary_df: pd.DataFrame,
-    training_pattern_strength_df: pd.DataFrame,
-    testing_coefficient_df: pd.DataFrame,
-    testing_coefficient_wide_df: pd.DataFrame,
-    condition_coefficient_df: pd.DataFrame,
+    pattern_expression_trial_df: pd.DataFrame,
+    condition_pattern_expression_df: pd.DataFrame,
+    effect_slope_df: pd.DataFrame,
+    design_diagnostics_df: pd.DataFrame,
+    covariance_diagnostics_df: pd.DataFrame,
     config_payload: dict[str, object] | None,
     topography: dict[str, object] | None,
     subject_payloads: dict[str, dict[str, np.ndarray]],
@@ -244,10 +245,10 @@ def export_encoding_model_outputs(
         Output filename registry for the encoding model workflow.
     subject_summary_df, skipped_subjects_df, run_summary_df : pd.DataFrame
         Run summary tables.
-    training_pattern_strength_df, testing_coefficient_df : pd.DataFrame
-        Long training and testing model outputs.
-    testing_coefficient_wide_df, condition_coefficient_df : pd.DataFrame
-        Wide testing and condition-averaged output tables.
+    pattern_expression_trial_df, condition_pattern_expression_df : pd.DataFrame
+        Held-out pattern-expression output tables.
+    effect_slope_df, design_diagnostics_df, covariance_diagnostics_df : pd.DataFrame
+        Subject-level effect slopes and diagnostics.
     config_payload : dict[str, object] | None
         Optional JSON-serializable run configuration.
     topography : dict[str, object] | None
@@ -275,23 +276,27 @@ def export_encoding_model_outputs(
         if skipped_path.exists():
             skipped_path.unlink()
     run_summary_df.to_csv(output_dir / output_files["run_summary"], index=False)
-    training_pattern_strength_df.to_csv(
-        output_dir / output_files["training_pattern_strength"],
+    pattern_expression_trial_df.to_csv(
+        output_dir / output_files["pattern_expression_trial"],
         index=False,
     )
-    testing_coefficient_df.to_csv(
-        output_dir / output_files["testing_effect_coefficients"],
+    condition_pattern_expression_df.to_csv(
+        output_dir / output_files["condition_pattern_expression"],
         index=False,
     )
-    testing_coefficient_wide_df.to_csv(
-        output_dir / output_files["testing_effect_coefficients_wide"],
+    effect_slope_df.to_csv(
+        output_dir / output_files["effect_slope"],
         index=False,
     )
-    condition_coefficient_df.to_csv(
-        output_dir / output_files["condition_average_coefficients"],
+    design_diagnostics_df.to_csv(
+        output_dir / output_files["design_diagnostics"],
         index=False,
     )
-    write_pattern_expression_readme(output_dir)
+    covariance_diagnostics_df.to_csv(
+        output_dir / output_files["covariance_diagnostics"],
+        index=False,
+    )
+    write_encoding_model_readme(output_dir)
     if config_payload is not None:
         with open(output_dir / "config.json", "w", encoding="utf-8") as f:
             json.dump(config_payload, f, indent=2)

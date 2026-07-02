@@ -62,12 +62,79 @@ def run_encoding_design_check(
 
 
 
+def _add_interaction_column(
+    condition_encoding: pd.DataFrame,
+    term: str,
+    *,
+    allowed_predictors: set[str],
+) -> pd.Series:
+    """Return one condition-level interaction column from existing predictors."""
+
+    factors = [factor.strip() for factor in term.split(":")]
+    if len(factors) < 2 or any(factor == "" for factor in factors):
+        raise ValueError(f"Invalid interaction term '{term}'.")
+    unknown = [factor for factor in factors if factor not in allowed_predictors]
+    if len(unknown) > 0:
+        raise ValueError(
+            f"Unknown predictor(s) {unknown} in interaction term '{term}'. "
+            f"Allowed predictors: {sorted(allowed_predictors)}"
+        )
+
+    values = np.ones(len(condition_encoding), dtype=float)
+    for factor in factors:
+        values = values * condition_encoding[factor].to_numpy(dtype=float)
+    return pd.Series(values, index=condition_encoding.index, name=term)
+
+
+def build_formula_condition_encoding(
+    condition_encoding: pd.DataFrame,
+    glm_formula: str,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Build a formula-selected condition table with simple interactions.
+
+    Parameters
+    ----------
+    condition_encoding : pd.DataFrame
+        Condition-level design table with one ``condition`` column and numeric
+        predictor columns.
+    glm_formula : str
+        Formula using additive terms, ``a:b`` interactions, and ``a * b``
+        shorthand. Complex formula functions are intentionally unsupported.
+
+    Returns
+    -------
+    tuple[pandas.DataFrame, dict[str, object]]
+        Condition table restricted to selected/generated columns and the parsed
+        formula metadata.
+    """
+
+    if "condition" not in condition_encoding.columns:
+        raise ValueError("condition_encoding must include a 'condition' column.")
+
+    parsed = validate_glm_formula(
+        glm_formula,
+        allowed_predictors=set(condition_encoding.columns).difference({"condition"}),
+    )
+    output = condition_encoding.loc[:, ["condition"]].copy()
+    for predictor in parsed["predictors"]:
+        if predictor in condition_encoding.columns:
+            output[predictor] = condition_encoding[predictor].to_numpy(dtype=float)
+        else:
+            output[predictor] = _add_interaction_column(
+                condition_encoding,
+                predictor,
+                allowed_predictors=set(condition_encoding.columns).difference({"condition"}),
+            )
+
+    return output, parsed
+
+
 def validate_glm_formula(
     glm_formula: str,
     *,
     allowed_predictors: set[str],
 ) -> dict[str, object]:
-    """Validate and parse a simple R-style GLM formula."""
+    """Validate and parse a small R-style GLM formula."""
 
     formula_text = str(glm_formula).strip()
     if not formula_text.startswith("~"):
@@ -86,6 +153,30 @@ def validate_glm_formula(
 
     add_intercept = True
     predictors: list[str] = []
+    interactions: list[str] = []
+
+    def add_predictor(name: str) -> None:
+        """Add one predictor name while preserving first-seen order."""
+
+        if name not in predictors:
+            predictors.append(name)
+
+    def add_interaction(term: str) -> None:
+        """Add one interaction term after validating its factor names."""
+
+        factors = [factor.strip() for factor in term.split(":")]
+        if len(factors) < 2 or any(factor == "" for factor in factors):
+            raise ValueError(f"Invalid interaction term '{term}'.")
+        unknown = [factor for factor in factors if factor not in allowed_predictors]
+        if len(unknown) > 0:
+            raise ValueError(
+                f"Unknown predictor(s) {unknown} in interaction term '{term}'. "
+                f"Allowed predictors: {sorted(allowed_predictors)}"
+            )
+        label = ":".join(factors)
+        add_predictor(label)
+        if label not in interactions:
+            interactions.append(label)
 
     for term in raw_terms:
         if term in {"1"}:
@@ -94,21 +185,38 @@ def validate_glm_formula(
         if term in {"0", "-1"}:
             add_intercept = False
             continue
-        if any(token in term for token in [":", "*", "^", "(", ")"]):
+        if any(token in term for token in ["^", "(", ")"]):
             raise ValueError(
-                "glm_formula supports additive main effects only (e.g., "
-                "'~ 1 + feature_a + feature_b'). "
+                "glm_formula supports additive terms and simple interactions "
+                "(e.g., '~ 1 + feature_a * feature_b'). "
                 f"Unsupported term: '{term}'. "
-                "R-style interaction terms such as 'feature_a * feature_b' "
-                "expand to main effects plus an interaction and add an extra effect."
             )
+        if "*" in term:
+            factors = [factor.strip() for factor in term.split("*")]
+            if len(factors) != 2 or any(factor == "" for factor in factors):
+                raise ValueError(
+                    "Only two-way '*' interactions are supported. "
+                    f"Unsupported term: '{term}'."
+                )
+            unknown = [factor for factor in factors if factor not in allowed_predictors]
+            if len(unknown) > 0:
+                raise ValueError(
+                    f"Unknown predictor(s) {unknown} in glm_formula '{glm_formula}'. "
+                    f"Allowed predictors: {sorted(allowed_predictors)}"
+                )
+            for factor in factors:
+                add_predictor(factor)
+            add_interaction(":".join(factors))
+            continue
+        if ":" in term:
+            add_interaction(term)
+            continue
         if term not in allowed_predictors:
             raise ValueError(
                 f"Unknown predictor '{term}' in glm_formula '{glm_formula}'. "
                 f"Allowed predictors: {sorted(allowed_predictors)}"
             )
-        if term not in predictors:
-            predictors.append(term)
+        add_predictor(term)
 
     if len(predictors) == 0:
         raise ValueError(
@@ -118,6 +226,6 @@ def validate_glm_formula(
     return {
         "add_intercept": add_intercept,
         "predictors": predictors,
+        "interactions": interactions,
     }
-
 

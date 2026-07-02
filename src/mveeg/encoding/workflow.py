@@ -35,12 +35,10 @@ from .config import EncodingConfig
 from .workflow_design import run_encoding_design_check, validate_glm_formula
 from .workflow_model import (
     MODEL_OUTPUT_FILES,
-    TEST_METHOD_NAME,
-    TEST_METHOD_VERSION,
+    compare_encoding_models_workflow,
     run_encoding_workflow,
 )
 from .io import load_subject_info
-from .summaries import build_condition_average_coefficient_table
 from .workflow_paths import infer_experiment_settings, prepare_encoding_paths
 from .workflow_pattern_expression import (
     LEGACY_OUTPUT_FILES,
@@ -52,8 +50,8 @@ from .workflow_pattern_expression import (
 __all__ = [
     "LEGACY_OUTPUT_FILES",
     "MODEL_OUTPUT_FILES",
-    "TEST_METHOD_NAME",
-    "TEST_METHOD_VERSION",
+    "compare_encoding_models",
+    "compare_encoding_models_workflow",
     "export_encoding_outputs",
     "infer_experiment_settings",
     "prepare_encoding_paths",
@@ -68,9 +66,11 @@ __all__ = [
 
 _ENCODING_STORE_TABLES = {
     "subject_summary": "_mveeg_subject_summary",
-    "training_pattern_strength": "_mveeg_subject_training_pattern_strength",
-    "testing_effect_coefficients": "_mveeg_subject_testing_effect_coefficients",
-    "testing_effect_coefficients_wide": "_mveeg_subject_testing_effect_coefficients_wide",
+    "pattern_expression_trial": "_mveeg_subject_pattern_expression_trial",
+    "condition_pattern_expression": "_mveeg_subject_condition_pattern_expression",
+    "effect_slope": "_mveeg_subject_effect_slope",
+    "design_diagnostics": "_mveeg_subject_design_diagnostics",
+    "covariance_diagnostics": "_mveeg_subject_covariance_diagnostics",
     "beta_patterns": "_mveeg_subject_beta_patterns",
 }
 
@@ -208,7 +208,7 @@ def run_encoding(
             cv_random_state=int(cv_random_state),
             time_window_ms=int(encoding_params["time_window_ms"]),
             standardize_data=bool(encoding_params.get("standardize_data", True)),
-            n_null_repeats=int(encoding_params["n_null_repeats"]),
+            covariance=str(encoding_params.get("covariance", "shrinkage")),
             run_name=name,
             topography=topography,
             config_payload={
@@ -242,7 +242,7 @@ def run_encoding(
         cv_random_state=int(cv_random_state),
         time_window_ms=int(encoding_params["time_window_ms"]),
         standardize_data=bool(encoding_params.get("standardize_data", True)),
-        n_null_repeats=int(encoding_params["n_null_repeats"]),
+        covariance=str(encoding_params.get("covariance", "shrinkage")),
         results_dir=None,
         run_name=name,
         config_payload=None,
@@ -252,6 +252,121 @@ def run_encoding(
 
     tables = _public_table_names(run_output)
     return tables
+
+
+def compare_encoding_models(
+    *,
+    data_dir: str | Path,
+    subject_ids: list[str],
+    trial_filters: dict[str, object],
+    encoding_params: dict[str, object],
+    condition_encoding: pd.DataFrame,
+    condition_label_map: dict[str, list[str]],
+    models: dict[str, str | list[str]],
+    overwrite: bool,
+    name: str,
+    reference_model: str | None = None,
+    experiment_name: str | None = None,
+    cond_col: str = "label",
+) -> dict[str, pd.DataFrame]:
+    """Compare candidate encoding models by held-out multichannel EEG prediction.
+
+    Parameters
+    ----------
+    data_dir : str | Path
+        Preprocessed data folder used for the current experiment.
+    subject_ids : list[str]
+        Subject IDs requested by the caller.
+    trial_filters : dict[str, object]
+        Trial inclusion and exclusion settings.
+    encoding_params : dict[str, object]
+        Time-window, channel-drop, cross-validation, and covariance settings.
+    condition_encoding : pd.DataFrame
+        Condition-level design table with one ``condition`` column.
+    condition_label_map : dict[str, list[str]]
+        Mapping from analysis condition labels to raw metadata labels.
+    models : dict[str, str | list[str]]
+        Candidate model formulas or predictor-term lists. All models share the
+        same CV splits and preprocessing.
+    overwrite : bool
+        Present for public API consistency.
+    name : str
+        Analysis name recorded in the run summary.
+    reference_model : str | None
+        Model used for delta metrics. Defaults to the first provided model.
+    experiment_name : str | None
+        Experiment name used to locate derivative files.
+    cond_col : str
+        Metadata column used to read raw condition labels.
+
+    Returns
+    -------
+    dict[str, pandas.DataFrame]
+        Model-comparison and diagnostic tables.
+    """
+
+    experiment_name, _ = infer_experiment_settings(
+        data_dir=data_dir,
+        experiment_name=experiment_name,
+        results_subdir=None,
+    )
+    source_to_condition = {
+        source: label
+        for label, sources in condition_label_map.items()
+        for source in sources
+    }
+    loader_cfg = SubjectLoadConfig(
+        dataset=DataPathsConfig(data_dir=data_dir, experiment_name=experiment_name),
+        conditions=ConditionGroupsConfig(
+            train_cond=condition_label_map,
+            test_cond=condition_label_map,
+            cond_col=cond_col,
+        ),
+        filters=TrialFilterRulesConfig(
+            qc_col=trial_filters["qc_col"],
+            keep_qc=tuple(trial_filters["keep_qc"]),
+            exclude_metadata=trial_filters["exclude_metadata"],
+        ),
+        epoch=EpochProcessingConfig(
+            crop_time=encoding_params["crop_time"],
+            drop_channel_types=encoding_params["drop_channel_types"],
+            drop_channels=encoding_params["drop_channels"],
+        ),
+    )
+    design_cfg = EncodingConfig(
+        add_intercept=True,
+        validation_mode=encoding_params.get("validation_mode", "estimable_independent"),
+        tolerance=encoding_params.get("tolerance", 1e-10),
+    )
+    run_output = compare_encoding_models_workflow(
+        subject_ids=subject_ids,
+        loader_cfg=loader_cfg,
+        condition_encoding=condition_encoding,
+        design_cfg=design_cfg,
+        models=models,
+        source_to_condition=source_to_condition,
+        reference_model=reference_model,
+        overwrite=overwrite,
+        cv_n_splits=int(encoding_params.get("cv_n_splits", encoding_params.get("n_splits", 5))),
+        cv_shuffle=bool(encoding_params.get("cv_shuffle", encoding_params.get("shuffle", True))),
+        cv_random_state=int(
+            encoding_params.get("cv_random_state", encoding_params.get("random_state", 42))
+        ),
+        time_window_ms=int(encoding_params["time_window_ms"]),
+        standardize_data=bool(encoding_params.get("standardize_data", True)),
+        covariance=str(encoding_params.get("covariance", "shrinkage")),
+        results_dir=None,
+        run_name=name,
+        config_payload=None,
+        log_path=None,
+    )
+    return {
+        "model_comparison": run_output["model_comparison_df"],
+        "design_diagnostics": run_output["design_diagnostics_df"],
+        "covariance_diagnostics": run_output["covariance_diagnostics_df"],
+        "run_summary": run_output["run_summary_df"],
+        "skipped": run_output["skipped_subjects_df"],
+    }
 
 
 def _run_encoding_store(
@@ -270,7 +385,7 @@ def _run_encoding_store(
     cv_random_state: int,
     time_window_ms: int,
     standardize_data: bool,
-    n_null_repeats: int,
+    covariance: str,
     run_name: str,
     topography: dict[str, object] | None,
     config_payload: dict[str, object],
@@ -299,7 +414,7 @@ def _run_encoding_store(
             cv_random_state=cv_random_state,
             time_window_ms=time_window_ms,
             standardize_data=standardize_data,
-            n_null_repeats=n_null_repeats,
+            covariance=covariance,
             run_name=run_name,
         ),
         finalize=lambda: _finalize_encoding_store(
@@ -309,7 +424,7 @@ def _run_encoding_store(
             topography=topography,
             time_window_ms=time_window_ms,
             standardize_data=standardize_data,
-            n_null_repeats=n_null_repeats,
+            covariance=covariance,
         ),
     )
 
@@ -329,7 +444,7 @@ def _process_encoding_store_subjects(
     cv_random_state: int,
     time_window_ms: int,
     standardize_data: bool,
-    n_null_repeats: int,
+    covariance: str,
     run_name: str,
 ) -> None:
     run_output = run_encoding_workflow(
@@ -347,7 +462,7 @@ def _process_encoding_store_subjects(
         cv_random_state=cv_random_state,
         time_window_ms=time_window_ms,
         standardize_data=standardize_data,
-        n_null_repeats=n_null_repeats,
+        covariance=covariance,
         results_dir=None,
         run_name=run_name,
         config_payload=None,
@@ -360,9 +475,11 @@ def _process_encoding_store_subjects(
         subject_ids=subject_ids,
         tables={
             _ENCODING_STORE_TABLES["subject_summary"]: run_output["subject_summary_df"],
-            _ENCODING_STORE_TABLES["training_pattern_strength"]: run_output["training_pattern_strength_df"],
-            _ENCODING_STORE_TABLES["testing_effect_coefficients"]: run_output["testing_coefficient_df"],
-            _ENCODING_STORE_TABLES["testing_effect_coefficients_wide"]: run_output["testing_coefficient_wide_df"],
+            _ENCODING_STORE_TABLES["pattern_expression_trial"]: run_output["pattern_expression_trial_df"],
+            _ENCODING_STORE_TABLES["condition_pattern_expression"]: run_output["condition_pattern_expression_df"],
+            _ENCODING_STORE_TABLES["effect_slope"]: run_output["effect_slope_df"],
+            _ENCODING_STORE_TABLES["design_diagnostics"]: run_output["design_diagnostics_df"],
+            _ENCODING_STORE_TABLES["covariance_diagnostics"]: run_output["covariance_diagnostics_df"],
             _ENCODING_STORE_TABLES["beta_patterns"]: _encoding_beta_patterns_to_long(run_output["subject_payloads"]),
         },
     )
@@ -381,12 +498,14 @@ def _finalize_encoding_store(
     topography: dict[str, object] | None,
     time_window_ms: int,
     standardize_data: bool,
-    n_null_repeats: int,
+    covariance: str,
 ) -> dict[str, pd.DataFrame]:
     subject_summary_df = read_internal_table(result_file, _ENCODING_STORE_TABLES["subject_summary"])
-    training_pattern_strength_df = read_internal_table(result_file, _ENCODING_STORE_TABLES["training_pattern_strength"])
-    testing_coefficient_df = read_internal_table(result_file, _ENCODING_STORE_TABLES["testing_effect_coefficients"])
-    testing_coefficient_wide_df = read_internal_table(result_file, _ENCODING_STORE_TABLES["testing_effect_coefficients_wide"])
+    pattern_expression_trial_df = read_internal_table(result_file, _ENCODING_STORE_TABLES["pattern_expression_trial"])
+    condition_pattern_expression_df = read_internal_table(result_file, _ENCODING_STORE_TABLES["condition_pattern_expression"])
+    effect_slope_df = read_internal_table(result_file, _ENCODING_STORE_TABLES["effect_slope"])
+    design_diagnostics_df = read_internal_table(result_file, _ENCODING_STORE_TABLES["design_diagnostics"])
+    covariance_diagnostics_df = read_internal_table(result_file, _ENCODING_STORE_TABLES["covariance_diagnostics"])
     beta_patterns_df = read_internal_table(result_file, _ENCODING_STORE_TABLES["beta_patterns"])
     skipped_subjects_df = result_skipped_table(result_file)
 
@@ -394,19 +513,15 @@ def _finalize_encoding_store(
         raise RuntimeError("No completed subjects were available in the encoding result store.")
 
     subject_summary_df = subject_summary_df.sort_values("subject").reset_index(drop=True)
-    training_pattern_strength_df = _sort_if_columns(
-        training_pattern_strength_df,
-        ["effect", "data_type", "subject", "fold", "null_draw", "time_ms"],
-    )
-    testing_coefficient_df = _sort_if_columns(
-        testing_coefficient_df,
+    pattern_expression_trial_df = _sort_if_columns(
+        pattern_expression_trial_df,
         ["effect", "condition", "subject", "fold", "trial_index", "time_ms"],
     )
-    testing_coefficient_wide_df = _sort_if_columns(
-        testing_coefficient_wide_df,
-        ["condition", "subject", "fold", "trial_index", "time_ms"],
+    condition_pattern_expression_df = _sort_if_columns(
+        condition_pattern_expression_df,
+        ["effect", "condition", "subject", "time_ms"],
     )
-    condition_coefficient_df = build_condition_average_coefficient_table(testing_coefficient_df)
+    effect_slope_df = _sort_if_columns(effect_slope_df, ["effect", "subject", "time_ms"])
     statuses = read_result_subject_status(result_file)
     run_summary_df = pd.DataFrame(
         {
@@ -414,21 +529,20 @@ def _finalize_encoding_store(
             "n_subjects_requested": [len(statuses)],
             "n_subjects_completed": [len(subject_summary_df)],
             "n_subjects_skipped": [len(skipped_subjects_df)],
-            "test_method_name": [TEST_METHOD_NAME],
-            "test_method_version": [TEST_METHOD_VERSION],
             "time_window_ms": [int(time_window_ms)],
             "standardize_data": [bool(standardize_data)],
-            "n_null_repeats": [int(n_null_repeats)],
+            "covariance_method": [str(covariance)],
         }
     )
     tables = {
         "subject_summary": subject_summary_df,
         "skipped": skipped_subjects_df,
         "run_summary": run_summary_df,
-        "training_pattern_strength": training_pattern_strength_df,
-        "testing_effect_coefficients": testing_coefficient_df,
-        "testing_effect_coefficients_wide": testing_coefficient_wide_df,
-        "condition_average_coefficients": condition_coefficient_df,
+        "pattern_expression_trial": pattern_expression_trial_df,
+        "condition_pattern_expression": condition_pattern_expression_df,
+        "effect_slope": effect_slope_df,
+        "design_diagnostics": design_diagnostics_df,
+        "covariance_diagnostics": covariance_diagnostics_df,
     }
     if topography is not None:
         tables.update(
@@ -762,10 +876,11 @@ def _public_table_names(run_output: dict[str, object]) -> dict[str, pd.DataFrame
         "subject_summary_df": "subject_summary",
         "skipped_subjects_df": "skipped",
         "run_summary_df": "run_summary",
-        "training_pattern_strength_df": "training_pattern_strength",
-        "testing_coefficient_df": "testing_effect_coefficients",
-        "testing_coefficient_wide_df": "testing_effect_coefficients_wide",
-        "condition_coefficient_df": "condition_average_coefficients",
+        "pattern_expression_trial_df": "pattern_expression_trial",
+        "condition_pattern_expression_df": "condition_pattern_expression",
+        "effect_slope_df": "effect_slope",
+        "design_diagnostics_df": "design_diagnostics",
+        "covariance_diagnostics_df": "covariance_diagnostics",
         "topography_values_df": "topography_values",
         "topography_coords_df": "topography_coords",
     }

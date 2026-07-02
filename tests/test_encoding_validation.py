@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from mveeg.encoding.workflow import (
+    compare_encoding_models,
     export_encoding_outputs,
     prepare_encoding_paths,
     run_encoding,
@@ -14,7 +15,7 @@ from mveeg.encoding.workflow import (
     run_pattern_expression_workflow,
     validate_glm_formula,
 )
-from mveeg.encoding.workflow_model import _saved_result_matches_current_settings
+from mveeg.encoding.metrics import estimate_channel_covariance
 from mveeg.encoding.workflow_outputs import (
     build_encoding_topography_value_table,
     export_encoding_model_outputs,
@@ -64,6 +65,7 @@ def test_encoding_workflow_facade_keeps_public_imports():
     assert callable(run_pattern_expression)
     assert callable(run_pattern_expression_workflow)
     assert callable(export_encoding_outputs)
+    assert callable(compare_encoding_models)
     assert callable(run_encoding_design_check)
     assert callable(validate_glm_formula)
     assert callable(run_encoding)
@@ -114,7 +116,7 @@ def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
             "n_splits": 2,
             "shuffle": False,
             "random_state": 1,
-            "n_null_repeats": 3,
+            "covariance": "identity",
         },
         condition_encoding=condition_encoding,
         condition_label_map={"same": ["correct"], "new": ["new"]},
@@ -129,6 +131,7 @@ def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
     assert captured["loader_cfg"].conditions.cond_col == "label"
     assert captured["cv_n_splits"] == 2
     assert captured["cv_shuffle"] is False
+    assert captured["covariance"] == "identity"
     assert captured["topography"] == {"time_window_ms": (1900, 2800)}
     assert captured["subject_results_dir"] is None
     assert captured["results_dir"] is None
@@ -191,7 +194,8 @@ def test_run_encoding_appends_new_subjects_to_result_store(tmp_path, monkeypatch
 
     assert processed == ["001", "002", "003", "002"]
     assert tables["subject_summary"]["subject"].tolist() == ["001", "002", "003"]
-    assert sorted(tables["testing_effect_coefficients"]["subject"].unique()) == ["001", "002", "003"]
+    assert sorted(tables["pattern_expression_trial"]["subject"].unique()) == ["001", "002", "003"]
+    assert "testing_effect_coefficients" not in tables
 
 
 def test_run_pattern_expression_appends_new_subjects_to_result_store(tmp_path):
@@ -350,10 +354,11 @@ def test_export_encoding_model_outputs_writes_topography_csvs(tmp_path, monkeypa
     )
 
     output_files = {
-        "training_pattern_strength": "training_pattern_strength.csv",
-        "testing_effect_coefficients": "testing_effect_coefficients.csv",
-        "testing_effect_coefficients_wide": "testing_effect_coefficients_wide.csv",
-        "condition_average_coefficients": "condition_average_coefficients.csv",
+        "pattern_expression_trial": "pattern_expression_trial.csv",
+        "condition_pattern_expression": "condition_pattern_expression.csv",
+        "effect_slope": "effect_slope.csv",
+        "design_diagnostics": "design_diagnostics.csv",
+        "covariance_diagnostics": "covariance_diagnostics.csv",
         "subject_summary": "subject_summary.csv",
         "run_summary": "run_summary.csv",
         "skipped_subjects": "skipped_subjects.csv",
@@ -366,10 +371,11 @@ def test_export_encoding_model_outputs_writes_topography_csvs(tmp_path, monkeypa
         subject_summary_df=pd.DataFrame({"subject": ["001"]}),
         skipped_subjects_df=pd.DataFrame(columns=["subject", "reason"]),
         run_summary_df=pd.DataFrame({"name": ["run"]}),
-        training_pattern_strength_df=pd.DataFrame({"subject": ["001"]}),
-        testing_coefficient_df=pd.DataFrame({"subject": ["001"]}),
-        testing_coefficient_wide_df=pd.DataFrame({"subject": ["001"]}),
-        condition_coefficient_df=pd.DataFrame({"subject": ["001"]}),
+        pattern_expression_trial_df=pd.DataFrame({"subject": ["001"]}),
+        condition_pattern_expression_df=pd.DataFrame({"subject": ["001"]}),
+        effect_slope_df=pd.DataFrame({"subject": ["001"]}),
+        design_diagnostics_df=pd.DataFrame({"subject": ["001"]}),
+        covariance_diagnostics_df=pd.DataFrame({"subject": ["001"]}),
         config_payload={"run_name": "run"},
         topography={"time_window_ms": (0, 50)},
         subject_payloads={"001": _make_topography_payload(raw_offset=0.0)},
@@ -399,10 +405,11 @@ def test_export_encoding_model_outputs_writes_named_topography_windows(tmp_path,
     )
 
     output_files = {
-        "training_pattern_strength": "training_pattern_strength.csv",
-        "testing_effect_coefficients": "testing_effect_coefficients.csv",
-        "testing_effect_coefficients_wide": "testing_effect_coefficients_wide.csv",
-        "condition_average_coefficients": "condition_average_coefficients.csv",
+        "pattern_expression_trial": "pattern_expression_trial.csv",
+        "condition_pattern_expression": "condition_pattern_expression.csv",
+        "effect_slope": "effect_slope.csv",
+        "design_diagnostics": "design_diagnostics.csv",
+        "covariance_diagnostics": "covariance_diagnostics.csv",
         "subject_summary": "subject_summary.csv",
         "run_summary": "run_summary.csv",
         "skipped_subjects": "skipped_subjects.csv",
@@ -415,10 +422,11 @@ def test_export_encoding_model_outputs_writes_named_topography_windows(tmp_path,
         subject_summary_df=pd.DataFrame({"subject": ["001"]}),
         skipped_subjects_df=pd.DataFrame(columns=["subject", "reason"]),
         run_summary_df=pd.DataFrame({"name": ["run"]}),
-        training_pattern_strength_df=pd.DataFrame({"subject": ["001"]}),
-        testing_coefficient_df=pd.DataFrame({"subject": ["001"]}),
-        testing_coefficient_wide_df=pd.DataFrame({"subject": ["001"]}),
-        condition_coefficient_df=pd.DataFrame({"subject": ["001"]}),
+        pattern_expression_trial_df=pd.DataFrame({"subject": ["001"]}),
+        condition_pattern_expression_df=pd.DataFrame({"subject": ["001"]}),
+        effect_slope_df=pd.DataFrame({"subject": ["001"]}),
+        design_diagnostics_df=pd.DataFrame({"subject": ["001"]}),
+        covariance_diagnostics_df=pd.DataFrame({"subject": ["001"]}),
         config_payload={"run_name": "run"},
         topography={
             "time_windows_ms": {
@@ -441,55 +449,48 @@ def test_validate_glm_formula_parses_additive_terms():
     """Formula parsing should keep the supported additive model explicit."""
     parsed = validate_glm_formula("~ 0 + load + cue", allowed_predictors={"load", "cue"})
 
-    assert parsed == {"add_intercept": False, "predictors": ["load", "cue"]}
+    assert parsed == {
+        "add_intercept": False,
+        "predictors": ["load", "cue"],
+        "interactions": [],
+    }
 
 
-def test_saved_result_matching_checks_current_settings():
-    """Cache matching should accept saved results created with the same settings."""
-    saved = _make_saved_encoding_payload()
+def test_validate_glm_formula_expands_interactions():
+    """Formula parsing should expand simple interaction shorthand."""
+    parsed = validate_glm_formula("~ 1 + load * cue", allowed_predictors={"load", "cue"})
 
-    assert _saved_result_matches_current_settings(
-        saved,
-        standardize_data=True,
-        time_window_ms=50,
-        n_null_repeats=2,
-        source_condition_col="label",
-        source_to_condition={"raw_a": "A", "raw_b": "B"},
-        train_condition_labels=("A",),
+    assert parsed == {
+        "add_intercept": True,
+        "predictors": ["load", "cue", "load:cue"],
+        "interactions": ["load:cue"],
+    }
+
+
+def test_covariance_modes_return_finite_precision():
+    """Supported covariance modes should produce finite precision matrices."""
+    residuals = np.asarray(
+        [
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [-1.0, 0.0],
+            [0.0, -1.0],
+        ],
+        dtype=float,
     )
 
+    for method in ["identity", "diagonal", "shrinkage"]:
+        estimate = estimate_channel_covariance(residuals, method=method)
+        assert estimate.precision.shape == (2, 2)
+        assert np.isfinite(estimate.precision).all()
 
-def _make_saved_encoding_payload():
-    """Build the minimal saved payload needed by the cache-matching helper."""
-    return {
-        "subject": np.asarray("001", dtype=object),
-        "times_s": np.asarray([0.0]),
-        "ch_names": np.asarray(["Cz"], dtype=object),
-        "n_trials": np.asarray(4),
-        "n_channels": np.asarray(1),
-        "n_times": np.asarray(1),
-        "n_folds": np.asarray(2),
-        "time_window_ms": np.asarray(50),
-        "condition_levels": np.asarray(["A", "B"], dtype=object),
-        "standardize_data": np.asarray(True),
-        "test_method_name": np.asarray("coefficient_reconstruction", dtype=object),
-        "test_method_version": np.asarray("v2_condition_shuffled_null_2026-04-17", dtype=object),
-        "predictor_names": np.asarray(["intercept", "load"], dtype=object),
-        "raw_beta_patterns": np.zeros((1, 1, 1, 1)),
-        "pattern_strength_pattern": np.zeros((1, 1, 1)),
-        "pattern_strength_null_draws": np.zeros((1, 1, 1, 1)),
-        "n_null_repeats": np.asarray(2),
-        "coef_predictor_names": np.asarray(["intercept", "load"], dtype=object),
-        "coef_values": np.zeros((1, 2)),
-        "coef_fold": np.asarray([1]),
-        "coef_condition": np.asarray(["A"], dtype=object),
-        "coef_trial_index": np.asarray([0]),
-        "coef_time_ms": np.asarray([0.0]),
-        "source_condition_col": np.asarray("label", dtype=object),
-        "source_condition_keys": np.asarray(["raw_a", "raw_b"], dtype=object),
-        "source_condition_values": np.asarray(["A", "B"], dtype=object),
-        "train_condition_labels": np.asarray(["A"], dtype=object),
-    }
+
+def test_sample_covariance_errors_when_rank_deficient():
+    """Sample covariance should fail instead of silently pseudo-inverting."""
+    residuals = np.asarray([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=float)
+
+    with pytest.raises(ValueError, match="rank deficient"):
+        estimate_channel_covariance(residuals, method="sample")
 
 
 def _encoding_kwargs(tmp_path, **overrides):
@@ -508,7 +509,7 @@ def _encoding_kwargs(tmp_path, **overrides):
             "time_window_ms": 50,
             "drop_channel_types": [],
             "drop_channels": [],
-            "n_null_repeats": 1,
+            "covariance": "identity",
         },
         "condition_encoding": pd.DataFrame(
             {
@@ -543,41 +544,49 @@ def _make_encoding_store_output(subject_ids):
         ),
         "skipped_subjects_df": pd.DataFrame(columns=["subject", "reason"]),
         "run_summary_df": pd.DataFrame({"name": ["encoding"]}),
-        "training_pattern_strength_df": pd.DataFrame(
+        "pattern_expression_trial_df": pd.DataFrame(
             {
                 "subject": subject_ids,
                 "fold": [1] * n_subjects,
+                "trial_index": [0] * n_subjects,
+                "condition": ["a"] * n_subjects,
                 "effect": ["x"] * n_subjects,
                 "time_ms": [0.0] * n_subjects,
-                "data_type": ["pattern"] * n_subjects,
-                "pattern_strength": [0.1] * n_subjects,
-                "null_draw": [0] * n_subjects,
-                "n_null_repeats": [1] * n_subjects,
+                "expression": [0.2] * n_subjects,
+                "covariance_method": ["identity"] * n_subjects,
             }
         ),
-        "testing_coefficient_df": pd.DataFrame(
+        "condition_pattern_expression_df": pd.DataFrame(
             {
                 "subject": subject_ids,
-                "fold": [1] * n_subjects,
                 "condition": ["a"] * n_subjects,
-                "trial_index": [0] * n_subjects,
-                "time_ms": [0.0] * n_subjects,
                 "effect": ["x"] * n_subjects,
-                "coefficient": [0.2] * n_subjects,
+                "time_ms": [0.0] * n_subjects,
+                "expression_mean": [0.2] * n_subjects,
+                "expression_sd": [0.0] * n_subjects,
+                "expression_se": [0.0] * n_subjects,
+                "n_trials": [1] * n_subjects,
+                "covariance_method": ["identity"] * n_subjects,
             }
         ),
-        "testing_coefficient_wide_df": pd.DataFrame(
+        "effect_slope_df": pd.DataFrame(
             {
                 "subject": subject_ids,
-                "fold": [1] * n_subjects,
-                "condition": ["a"] * n_subjects,
-                "trial_index": [0] * n_subjects,
+                "effect": ["x"] * n_subjects,
                 "time_ms": [0.0] * n_subjects,
-                "coef_intercept": [0.0] * n_subjects,
-                "coef_x": [0.2] * n_subjects,
+                "slope": [0.2] * n_subjects,
+                "intercept": [0.0] * n_subjects,
+                "n_trials": [1] * n_subjects,
+                "n_folds": [1] * n_subjects,
+                "covariance_method": ["identity"] * n_subjects,
             }
         ),
-        "condition_coefficient_df": pd.DataFrame(),
+        "design_diagnostics_df": pd.DataFrame(
+            {"subject": subject_ids, "diagnostic": ["rank_X"] * n_subjects}
+        ),
+        "covariance_diagnostics_df": pd.DataFrame(
+            {"subject": subject_ids, "covariance_method": ["identity"] * n_subjects}
+        ),
         "subject_payloads": {
             subject: _make_encoding_store_payload(subject, offset=subject_ix)
             for subject_ix, subject in enumerate(subject_ids)
