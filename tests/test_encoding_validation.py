@@ -99,7 +99,6 @@ def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
     )
 
     result = workflow.run_encoding(
-        base_dir=tmp_path,
         data_dir=tmp_path / "data" / "preprocessed" / "exp1",
         subject_ids=["001", "002"],
         trial_filters={
@@ -131,7 +130,103 @@ def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
     assert captured["cv_n_splits"] == 2
     assert captured["cv_shuffle"] is False
     assert captured["topography"] == {"time_window_ms": (1900, 2800)}
-    assert result["summary_df"]["n_subjects_completed"].tolist() == [2]
+    assert captured["subject_results_dir"] is None
+    assert captured["results_dir"] is None
+    assert captured["config_payload"] is None
+    assert captured["log_path"] is None
+    assert result["subject_summary"]["subject"].tolist() == ["001", "002"]
+    assert result["skipped"].empty
+
+
+def test_run_encoding_appends_new_subjects_to_result_store(tmp_path, monkeypatch):
+    """Encoding DuckDB stores should only process requested missing subjects."""
+
+    from mveeg.encoding import workflow
+
+    processed = []
+    info = mne.create_info(["Cz"], sfreq=250, ch_types="eeg")
+    info.set_montage("standard_1020")
+
+    def fake_run_encoding_workflow(**kwargs):
+        subject_ids = [str(subject_id) for subject_id in kwargs["subject_ids"]]
+        processed.extend(subject_ids)
+        return _make_encoding_store_output(subject_ids)
+
+    monkeypatch.setattr(workflow, "run_encoding_workflow", fake_run_encoding_workflow)
+    monkeypatch.setattr(workflow, "load_subject_info", lambda _subject, _cfg: info)
+
+    file = tmp_path / "encoding"
+    workflow.run_encoding(
+        **_encoding_kwargs(
+            tmp_path,
+            subject_ids=["001", "002"],
+            overwrite=False,
+            file=file,
+            topography={"time_window_ms": (0, 50)},
+        )
+    )
+    tables = workflow.run_encoding(
+        **_encoding_kwargs(
+            tmp_path,
+            subject_ids=["003"],
+            overwrite=False,
+            file=file,
+            topography={"time_window_ms": (0, 50)},
+        )
+    )
+
+    assert processed == ["001", "002", "003"]
+    assert tables["subject_summary"]["subject"].tolist() == ["001", "002", "003"]
+    assert tables["topography_values"]["n_subjects"].tolist() == [3, 3]
+
+    tables = workflow.run_encoding(
+        **_encoding_kwargs(
+            tmp_path,
+            subject_ids=["002"],
+            overwrite=True,
+            file=file,
+            topography={"time_window_ms": (0, 50)},
+        )
+    )
+
+    assert processed == ["001", "002", "003", "002"]
+    assert tables["subject_summary"]["subject"].tolist() == ["001", "002", "003"]
+    assert sorted(tables["testing_effect_coefficients"]["subject"].unique()) == ["001", "002", "003"]
+
+
+def test_run_pattern_expression_appends_new_subjects_to_result_store(tmp_path):
+    """Pattern-expression stores should keep old subjects and append new ones."""
+
+    file = tmp_path / "pattern_expression"
+    run_pattern_expression(
+        subject_ids=["001"],
+        subject_inputs={"001": _make_pattern_expression_input(1.0)},
+        overwrite=False,
+        name="expr",
+        file=file,
+    )
+    tables = run_pattern_expression(
+        subject_ids=["002"],
+        subject_inputs={"002": _make_pattern_expression_input(2.0)},
+        overwrite=False,
+        name="expr",
+        file=file,
+    )
+
+    assert tables["trials"]["subject"].tolist() == ["001", "002"]
+    assert sorted(tables["trial_expression"]["subject"].unique()) == ["001", "002"]
+
+    tables = run_pattern_expression(
+        subject_ids=["001"],
+        subject_inputs={"001": _make_pattern_expression_input(5.0)},
+        overwrite=True,
+        name="expr",
+        file=file,
+    )
+
+    assert tables["trials"]["subject"].tolist() == ["001", "002"]
+    refreshed = tables["trial_expression"].loc[tables["trial_expression"]["subject"] == "001"]
+    assert refreshed["pattern_expression"].min() == 5.0
 
 
 def test_build_encoding_topography_value_table_exports_all_predictors():
@@ -394,6 +489,133 @@ def _make_saved_encoding_payload():
         "source_condition_keys": np.asarray(["raw_a", "raw_b"], dtype=object),
         "source_condition_values": np.asarray(["A", "B"], dtype=object),
         "train_condition_labels": np.asarray(["A"], dtype=object),
+    }
+
+
+def _encoding_kwargs(tmp_path, **overrides):
+    """Return minimal public run_encoding kwargs for facade/store tests."""
+
+    kwargs = {
+        "data_dir": tmp_path / "missing-data",
+        "subject_ids": ["001"],
+        "trial_filters": {
+            "qc_col": "qc",
+            "keep_qc": ["accepted"],
+            "exclude_metadata": {},
+        },
+        "encoding_params": {
+            "crop_time": (0.0, 1.0),
+            "time_window_ms": 50,
+            "drop_channel_types": [],
+            "drop_channels": [],
+            "n_null_repeats": 1,
+        },
+        "condition_encoding": pd.DataFrame(
+            {
+                "condition": ["a", "b"],
+                "x": [0.0, 1.0],
+            }
+        ),
+        "condition_label_map": {"a": ["a"], "b": ["b"]},
+        "glm_formula": "~ 1 + x",
+        "overwrite": False,
+        "name": "encoding",
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def _make_encoding_store_output(subject_ids):
+    """Build minimal run_encoding_workflow output for cumulative-store tests."""
+
+    subject_ids = [str(subject_id) for subject_id in subject_ids]
+    n_subjects = len(subject_ids)
+    return {
+        "subject_summary_df": pd.DataFrame(
+            {
+                "subject": subject_ids,
+                "n_trials": [2] * n_subjects,
+                "n_channels": [1] * n_subjects,
+                "n_times": [2] * n_subjects,
+                "n_folds": [1] * n_subjects,
+                "condition_levels": ["a,b"] * n_subjects,
+            }
+        ),
+        "skipped_subjects_df": pd.DataFrame(columns=["subject", "reason"]),
+        "run_summary_df": pd.DataFrame({"name": ["encoding"]}),
+        "training_pattern_strength_df": pd.DataFrame(
+            {
+                "subject": subject_ids,
+                "fold": [1] * n_subjects,
+                "effect": ["x"] * n_subjects,
+                "time_ms": [0.0] * n_subjects,
+                "data_type": ["pattern"] * n_subjects,
+                "pattern_strength": [0.1] * n_subjects,
+                "null_draw": [0] * n_subjects,
+                "n_null_repeats": [1] * n_subjects,
+            }
+        ),
+        "testing_coefficient_df": pd.DataFrame(
+            {
+                "subject": subject_ids,
+                "fold": [1] * n_subjects,
+                "condition": ["a"] * n_subjects,
+                "trial_index": [0] * n_subjects,
+                "time_ms": [0.0] * n_subjects,
+                "effect": ["x"] * n_subjects,
+                "coefficient": [0.2] * n_subjects,
+            }
+        ),
+        "testing_coefficient_wide_df": pd.DataFrame(
+            {
+                "subject": subject_ids,
+                "fold": [1] * n_subjects,
+                "condition": ["a"] * n_subjects,
+                "trial_index": [0] * n_subjects,
+                "time_ms": [0.0] * n_subjects,
+                "coef_intercept": [0.0] * n_subjects,
+                "coef_x": [0.2] * n_subjects,
+            }
+        ),
+        "condition_coefficient_df": pd.DataFrame(),
+        "subject_payloads": {
+            subject: _make_encoding_store_payload(subject, offset=subject_ix)
+            for subject_ix, subject in enumerate(subject_ids)
+        },
+    }
+
+
+def _make_encoding_store_payload(subject: str, offset: int) -> dict[str, np.ndarray]:
+    """Build a compact subject beta payload for DuckDB long-table storage."""
+
+    return {
+        "subject": np.asarray(subject, dtype=object),
+        "times_s": np.asarray([0.0, 0.05], dtype=float),
+        "ch_names": np.asarray(["Cz"], dtype=object),
+        "predictor_names": np.asarray(["intercept", "x"], dtype=object),
+        "raw_beta_patterns": np.asarray(
+            [[[[1.0 + offset, 2.0 + offset]], [[3.0 + offset, 4.0 + offset]]]],
+            dtype=float,
+        ),
+    }
+
+
+def _make_pattern_expression_input(offset: float) -> dict[str, object]:
+    """Build minimal per-subject pattern-expression input arrays."""
+
+    return {
+        "condition_labels": np.asarray(["a", "b"], dtype=object),
+        "times": np.asarray([0.0, 0.1], dtype=float),
+        "expression_by_effect": {
+            "x": np.asarray(
+                [
+                    [offset, offset + 1.0],
+                    [offset + 2.0, offset + 3.0],
+                ],
+                dtype=float,
+            )
+        },
+        "trial_index": np.asarray([0, 1], dtype=int),
     }
 
 

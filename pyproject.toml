@@ -13,6 +13,7 @@ keywords = ["EEG", "encoding", "decoding", "neuroscience", "psychology"]
 dependencies = [
     "numpy",
     "pandas",
+    "duckdb",
     "scipy",
     "scikit-learn",
     "mne",

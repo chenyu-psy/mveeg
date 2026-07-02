@@ -296,39 +296,79 @@ def export_encoding_model_outputs(
         with open(output_dir / "config.json", "w", encoding="utf-8") as f:
             json.dump(config_payload, f, indent=2)
 
-    topography_values_df = None
-    topography_coords_df = None
-    if topography is not None:
-        has_single_window = "time_window_ms" in topography
-        has_named_windows = "time_windows_ms" in topography
-        if has_single_window == has_named_windows:
-            raise ValueError(
-                "topography must include exactly one of 'time_window_ms' "
-                "or 'time_windows_ms'."
-            )
+    topography_outputs = build_encoding_topography_outputs(
+        topography=topography,
+        subject_payloads=subject_payloads,
+        loader_cfg=loader_cfg,
+    )
+    topography_values_df = topography_outputs["topography_values_df"]
+    topography_coords_df = topography_outputs["topography_coords_df"]
+    if topography_values_df is not None and topography_coords_df is not None:
         topography_values_path = output_dir / output_files["topography_values"]
         topography_coords_path = output_dir / output_files["topography_coords"]
         topography_values_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if has_single_window:
-            topography_values_df = build_encoding_topography_value_table(
-                subject_payloads=subject_payloads,
-                time_window_ms=topography["time_window_ms"],
-            )
-        else:
-            topography_values_df = build_encoding_topography_value_table(
-                subject_payloads=subject_payloads,
-                time_windows_ms=topography["time_windows_ms"],
-            )
-        first_subject = next(iter(subject_payloads))
-        first_payload = subject_payloads[first_subject]
-        topography_coords_df = build_topography_coord_table(
-            info=load_subject_info(first_subject, loader_cfg),
-            channels=first_payload["ch_names"].astype(str).tolist(),
-        )
         topography_values_df.to_csv(topography_values_path, index=False)
         topography_coords_df.to_csv(topography_coords_path, index=False)
 
+    return {
+        "topography_values_df": topography_values_df,
+        "topography_coords_df": topography_coords_df,
+    }
+
+
+def build_encoding_topography_outputs(
+    *,
+    topography: dict[str, object] | None,
+    subject_payloads: dict[str, dict[str, np.ndarray]],
+    loader_cfg,
+) -> dict[str, pd.DataFrame | None]:
+    """Build optional encoding topography result tables without writing files.
+
+    Parameters
+    ----------
+    topography : dict[str, object] | None
+        Optional topography settings. Provide exactly one of ``time_window_ms``
+        or ``time_windows_ms``.
+    subject_payloads : dict[str, dict[str, numpy.ndarray]]
+        Subject-level model payloads used for topography values.
+    loader_cfg : object
+        Encoding loader configuration used for channel-coordinate export.
+
+    Returns
+    -------
+    dict[str, pandas.DataFrame | None]
+        Topography value and coordinate tables, or ``None`` when topography is
+        not requested.
+    """
+
+    if topography is None:
+        return {"topography_values_df": None, "topography_coords_df": None}
+
+    has_single_window = "time_window_ms" in topography
+    has_named_windows = "time_windows_ms" in topography
+    if has_single_window == has_named_windows:
+        raise ValueError(
+            "topography must include exactly one of 'time_window_ms' "
+            "or 'time_windows_ms'."
+        )
+
+    if has_single_window:
+        topography_values_df = build_encoding_topography_value_table(
+            subject_payloads=subject_payloads,
+            time_window_ms=topography["time_window_ms"],
+        )
+    else:
+        topography_values_df = build_encoding_topography_value_table(
+            subject_payloads=subject_payloads,
+            time_windows_ms=topography["time_windows_ms"],
+        )
+
+    first_subject = next(iter(subject_payloads))
+    first_payload = subject_payloads[first_subject]
+    topography_coords_df = build_topography_coord_table(
+        info=load_subject_info(first_subject, loader_cfg),
+        channels=first_payload["ch_names"].astype(str).tolist(),
+    )
     return {
         "topography_values_df": topography_values_df,
         "topography_coords_df": topography_coords_df,

@@ -161,13 +161,18 @@ def export_decoding_outputs(
 
     results_dir = Path(results_dir)
 
-    trial_summary_df = run_output["trial_summary_df"]
-    skipped_subjects_df = run_output["skipped_subjects_df"]
-    accuracy_df = run_output["accuracy_df"]
-    hyperplane_df = run_output["hyperplane_df"]
-    pattern_df = run_output["pattern_df"]
-    reference_ch_names = run_output["reference_ch_names"]
-    topography_subject_id = run_output["topography_subject_id"]
+    tables = build_decoding_result_tables(
+        run_output=run_output,
+        cfg=cfg,
+        topo_windows_ms=topo_windows_ms,
+    )
+
+    trial_summary_df = tables["trials"]
+    skipped_subjects_df = tables["skipped"]
+    accuracy_df = tables["accuracy"]
+    hyperplane_df = tables["hyperplane"]
+    topography_values_df = tables["topography_values"]
+    topography_coords_df = tables["topography_coords"]
 
     trial_summary_df.to_csv(results_dir / CORE_OUTPUT_FILES["trial_summary"], index=False)
     accuracy_df.to_csv(results_dir / CORE_OUTPUT_FILES["accuracy_cv"], index=False)
@@ -180,15 +185,6 @@ def export_decoding_outputs(
         if skipped_path.exists():
             skipped_path.unlink()
 
-    topography_values_df = build_topography_value_table(
-        pattern_df=pattern_df,
-        windows_ms=topo_windows_ms,
-    )
-    topo_info = load_subject_info(topography_subject_id, cfg)
-    topography_coords_df = build_topography_coord_table(
-        info=topo_info,
-        channels=reference_ch_names,
-    )
     topography_values_df.to_csv(
         results_dir / CORE_OUTPUT_FILES["topography_values"],
         index=False,
@@ -198,6 +194,63 @@ def export_decoding_outputs(
         index=False,
     )
     return topography_values_df
+
+
+def build_decoding_result_tables(
+    *,
+    run_output: dict[str, object],
+    cfg: DecodingConfig,
+    topo_windows_ms: dict[str, tuple[int, int]],
+    run_summary_df: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Build the public result tables for one completed decoding run.
+
+    Parameters
+    ----------
+    run_output : dict[str, object]
+        Completed decoding outputs returned by ``run_decoding_workflow``.
+    cfg : DecodingConfig
+        Decoding configuration used to load channel coordinates.
+    topo_windows_ms : dict[str, tuple[int, int]]
+        Named time windows exported as channel-value summaries.
+    run_summary_df : pandas.DataFrame | None
+        Optional one-row run summary table.
+
+    Returns
+    -------
+    dict[str, pandas.DataFrame]
+        Result tables keyed by stable public names.
+    """
+
+    trial_summary_df = run_output["trial_summary_df"]
+    skipped_subjects_df = run_output["skipped_subjects_df"]
+    accuracy_df = run_output["accuracy_df"]
+    hyperplane_df = run_output["hyperplane_df"]
+    pattern_df = run_output["pattern_df"]
+    reference_ch_names = run_output["reference_ch_names"]
+    topography_subject_id = run_output["topography_subject_id"]
+
+    topography_values_df = build_topography_value_table(
+        pattern_df=pattern_df,
+        windows_ms=topo_windows_ms,
+    )
+    topo_info = load_subject_info(topography_subject_id, cfg)
+    topography_coords_df = build_topography_coord_table(
+        info=topo_info,
+        channels=reference_ch_names,
+    )
+
+    tables = {
+        "accuracy": accuracy_df,
+        "hyperplane": hyperplane_df,
+        "topography_values": topography_values_df,
+        "topography_coords": topography_coords_df,
+        "trials": trial_summary_df,
+        "skipped": skipped_subjects_df,
+    }
+    if run_summary_df is not None:
+        tables["run_summary"] = run_summary_df
+    return tables
 
 
 def build_topography_value_table(

@@ -26,7 +26,7 @@ from .summaries import (
     compute_pattern_strength,
 )
 from .workflow_design import run_encoding_design_check, validate_glm_formula
-from .workflow_outputs import export_encoding_model_outputs
+from .workflow_outputs import build_encoding_topography_outputs, export_encoding_model_outputs
 
 
 MODEL_OUTPUT_FILES = {
@@ -441,7 +441,7 @@ def _build_testing_dfs_from_saved(
 def _fit_one_encoding_subject(
     *,
     subject_id: str,
-    subject_results_dir: Path,
+    subject_results_dir: Path | None,
     loader_cfg,
     source_condition_col: str,
     source_to_condition: dict[str, str],
@@ -464,8 +464,8 @@ def _fit_one_encoding_subject(
     ----------
     subject_id : str
         Subject identifier to process.
-    subject_results_dir : Path
-        Folder where the subject-level NPZ cache is written.
+    subject_results_dir : Path | None
+        Optional folder where the subject-level NPZ cache is written.
     loader_cfg : object
         Encoding loader config used to load filtered EEG data.
     source_condition_col : str
@@ -715,18 +715,19 @@ def _fit_one_encoding_subject(
         "coef_trial_index": testing_coefficient_wide_df["trial_index"].to_numpy(dtype=int),
         "coef_time_ms": testing_coefficient_wide_df["time_ms"].to_numpy(dtype=float),
     }
-    save_encoding_model_result(
-        output_dir=subject_results_dir,
-        subject_id=subject_id,
-        payload=payload,
-    )
+    if subject_results_dir is not None:
+        save_encoding_model_result(
+            output_dir=subject_results_dir,
+            subject_id=subject_id,
+            payload=payload,
+        )
     return payload
 
 
 def run_encoding_workflow(
     *,
     subject_ids: list[str],
-    subject_results_dir: str | Path,
+    subject_results_dir: str | Path | None = None,
     loader_cfg,
     condition_encoding: pd.DataFrame,
     design_cfg: EncodingConfig,
@@ -752,8 +753,9 @@ def run_encoding_workflow(
     ----------
     subject_ids : list[str]
         Subject identifiers to process.
-    subject_results_dir : str | Path
-        Folder used for per-subject cache files.
+    subject_results_dir : str | Path | None
+        Optional folder used for per-subject cache files. When ``None``,
+        subject results stay in memory and no cache files are read or written.
     loader_cfg : object
         Subject-loading config. ``loader_cfg.conditions.cond_col`` defines the
         metadata column containing raw condition labels.
@@ -789,8 +791,9 @@ def run_encoding_workflow(
             "Provide source_to_condition for mapping raw labels to analysis conditions."
         )
 
-    subject_results_dir = Path(subject_results_dir)
-    subject_results_dir.mkdir(parents=True, exist_ok=True)
+    if subject_results_dir is not None:
+        subject_results_dir = Path(subject_results_dir)
+        subject_results_dir.mkdir(parents=True, exist_ok=True)
     source_condition_col = loader_cfg.conditions.cond_col
     source_to_condition = {
         str(key): str(value) for key, value in source_to_condition.items()
@@ -811,15 +814,16 @@ def run_encoding_workflow(
         validation_mode=design_cfg.validation_mode,
         tolerance=design_cfg.tolerance,
     )
-    output_dir = Path(results_dir) if results_dir is not None else subject_results_dir.parent
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(results_dir) if results_dir is not None else None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
 
     subject_payloads = {}
 
     def process_one_subject(subject_id: str, progress_bar):
         used_saved_result = False
         saved = None
-        if not overwrite:
+        if subject_results_dir is not None and not overwrite:
             try:
                 saved = load_encoding_model_result(subject_results_dir, subject_id)
             except FileNotFoundError:
@@ -949,21 +953,28 @@ def run_encoding_workflow(
         testing_coefficient_df
     )
 
-    topography_outputs = export_encoding_model_outputs(
-        output_dir=output_dir,
-        output_files=MODEL_OUTPUT_FILES,
-        subject_summary_df=subject_summary_df,
-        skipped_subjects_df=skipped_subjects_df,
-        run_summary_df=run_summary_df,
-        training_pattern_strength_df=training_pattern_strength_df,
-        testing_coefficient_df=testing_coefficient_df,
-        testing_coefficient_wide_df=testing_coefficient_wide_df,
-        condition_coefficient_df=condition_coefficient_df,
-        config_payload=config_payload,
-        topography=topography,
-        subject_payloads=subject_payloads,
-        loader_cfg=loader_cfg,
-    )
+    if output_dir is None:
+        topography_outputs = build_encoding_topography_outputs(
+            topography=topography,
+            subject_payloads=subject_payloads,
+            loader_cfg=loader_cfg,
+        )
+    else:
+        topography_outputs = export_encoding_model_outputs(
+            output_dir=output_dir,
+            output_files=MODEL_OUTPUT_FILES,
+            subject_summary_df=subject_summary_df,
+            skipped_subjects_df=skipped_subjects_df,
+            run_summary_df=run_summary_df,
+            training_pattern_strength_df=training_pattern_strength_df,
+            testing_coefficient_df=testing_coefficient_df,
+            testing_coefficient_wide_df=testing_coefficient_wide_df,
+            condition_coefficient_df=condition_coefficient_df,
+            config_payload=config_payload,
+            topography=topography,
+            subject_payloads=subject_payloads,
+            loader_cfg=loader_cfg,
+        )
 
     return {
         "subject_summary_df": subject_summary_df,
@@ -973,6 +984,7 @@ def run_encoding_workflow(
         "testing_coefficient_df": testing_coefficient_df,
         "testing_coefficient_wide_df": testing_coefficient_wide_df,
         "condition_coefficient_df": condition_coefficient_df,
+        "subject_payloads": subject_payloads,
         **topography_outputs,
     }
 

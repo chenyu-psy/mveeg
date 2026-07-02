@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 
+from mveeg.decoding import workflow as decoding_workflow
 from mveeg.decoding.config import (
     ConditionConfig,
     DatasetConfig,
@@ -244,6 +245,182 @@ def test_export_decoding_outputs_writes_r_ready_topography_csvs(tmp_path, monkey
     assert not (tmp_path / "topo_manifest.csv").exists()
     assert topography_df["channel"].tolist() == ["Cz", "Fz"]
     assert topography_df["z_value"].tolist() == [1.0, -1.0]
+
+
+def test_run_decoding_appends_new_subjects_to_result_store(tmp_path, monkeypatch):
+    """Existing DuckDB stores should only process requested missing subjects."""
+
+    processed = []
+
+    def fake_discover_subject_ids(_data_dir):
+        return ["001", "002", "003"]
+
+    def fake_run_decoding_workflow(**kwargs):
+        subject_ids = [str(subject_id) for subject_id in kwargs["subject_ids"]]
+        processed.extend(subject_ids)
+        return {
+            "accuracy_df": pd.DataFrame(
+                {
+                    "subject": subject_ids,
+                    "time_ms": [0] * len(subject_ids),
+                    "accuracy": [0.75] * len(subject_ids),
+                }
+            ),
+            "hyperplane_df": pd.DataFrame(
+                {
+                    "subject": subject_ids,
+                    "trial_id": [1] * len(subject_ids),
+                    "condition": ["a"] * len(subject_ids),
+                    "time_ms": [0] * len(subject_ids),
+                    "distance": [0.1] * len(subject_ids),
+                }
+            ),
+            "pattern_df": pd.DataFrame(
+                {
+                    "subject": subject_ids,
+                    "channel": ["Cz"] * len(subject_ids),
+                    "time_ms": [0] * len(subject_ids),
+                    "value": [1.0] * len(subject_ids),
+                }
+            ),
+            "trial_summary_df": pd.DataFrame({"subject": subject_ids}),
+            "skipped_subjects_df": pd.DataFrame(columns=["subject", "reason"]),
+        }
+
+    def fake_build_decoding_result_tables(**kwargs):
+        run_output = kwargs["run_output"]
+        return {
+            "accuracy": run_output["accuracy_df"],
+            "hyperplane": run_output["hyperplane_df"],
+            "topography_values": pd.DataFrame({"channel": ["Cz"], "raw_value": [1.0]}),
+            "topography_coords": pd.DataFrame({"channel": ["Cz"], "x": [0.0], "y": [0.0]}),
+            "trials": run_output["trial_summary_df"],
+            "skipped": run_output["skipped_subjects_df"],
+        }
+
+    monkeypatch.setattr(decoding_workflow, "discover_subject_ids", fake_discover_subject_ids)
+    monkeypatch.setattr(decoding_workflow, "run_decoding_workflow", fake_run_decoding_workflow)
+    monkeypatch.setattr(decoding_workflow, "build_decoding_result_tables", fake_build_decoding_result_tables)
+
+    file = tmp_path / "decode"
+    run_decoding(
+        **_decoding_kwargs(
+            tmp_path,
+            subject_ids=["001", "002"],
+            overwrite=False,
+            topo_windows_ms={"early": (0, 50)},
+            file=file,
+        ),
+    )
+    tables = run_decoding(
+        **_decoding_kwargs(
+            tmp_path,
+            subject_ids=["003"],
+            overwrite=False,
+            topo_windows_ms={"early": (0, 50)},
+            file=file,
+        ),
+    )
+
+    assert processed == ["001", "002", "003"]
+    assert tables["accuracy"]["subject"].tolist() == ["001", "002", "003"]
+
+    tables = run_decoding(
+        **_decoding_kwargs(
+            tmp_path,
+            subject_ids=["002"],
+            overwrite=True,
+            topo_windows_ms={"early": (0, 50)},
+            file=file,
+        ),
+    )
+
+    assert processed == ["001", "002", "003", "002"]
+    assert tables["accuracy"]["subject"].tolist() == ["001", "003", "002"]
+
+
+def test_run_generalization_decoding_appends_new_subjects_to_result_store(tmp_path, monkeypatch):
+    """Generalization decoding should share incremental store behavior."""
+
+    processed = []
+
+    def fake_discover_subject_ids(_data_dir):
+        return ["001", "002", "003"]
+
+    def fake_run_generalization_workflow(**kwargs):
+        subject_ids = [str(subject_id) for subject_id in kwargs["subject_ids"]]
+        processed.extend(subject_ids)
+        return {
+            "accuracy_df": pd.DataFrame(
+                {
+                    "subject": subject_ids,
+                    "train_time_ms": [0] * len(subject_ids),
+                    "test_time_ms": [0] * len(subject_ids),
+                    "accuracy": [0.75] * len(subject_ids),
+                }
+            ),
+            "trial_summary_df": pd.DataFrame({"subject": subject_ids}),
+            "skipped_subjects_df": pd.DataFrame(columns=["subject", "reason"]),
+        }
+
+    monkeypatch.setattr(decoding_workflow, "discover_subject_ids", fake_discover_subject_ids)
+    monkeypatch.setattr(decoding_workflow, "run_generalization_workflow", fake_run_generalization_workflow)
+
+    file = tmp_path / "generalization"
+    run_generalization_decoding(
+        **_decoding_kwargs(
+            tmp_path,
+            subject_ids=["001", "002"],
+            overwrite=False,
+            file=file,
+        ),
+    )
+    tables = run_generalization_decoding(
+        **_decoding_kwargs(
+            tmp_path,
+            subject_ids=["003"],
+            overwrite=False,
+            file=file,
+        ),
+    )
+
+    assert processed == ["001", "002", "003"]
+    assert tables["accuracy"]["subject"].tolist() == ["001", "002", "003"]
+
+    tables = run_generalization_decoding(
+        **_decoding_kwargs(
+            tmp_path,
+            subject_ids=["002"],
+            overwrite=True,
+            file=file,
+        ),
+    )
+
+    assert processed == ["001", "002", "003", "002"]
+    assert tables["accuracy"]["subject"].tolist() == ["001", "003", "002"]
+
+
+def _decoding_kwargs(tmp_path, **overrides):
+    kwargs = {
+        "data_dir": tmp_path / "missing-data",
+        "trial_filters": {"qc_col": "qc", "keep_qc": ["accepted"], "exclude_metadata": {}},
+        "decoding_params": {
+            "crop_time": (0.0, 1.0),
+            "time_window_ms": 50,
+            "trial_bin_size": 1,
+            "n_splits": 2,
+            "n_repeats": 1,
+            "n_jobs": 1,
+            "drop_channel_types": [],
+            "drop_channels": [],
+        },
+        "classifier": {"backend": "sklearn", "model_name": "lda"},
+        "name": "decode",
+        "train_conditions": {"a": ["a"], "b": ["b"]},
+        "test_conditions": {"a": ["a"], "b": ["b"]},
+    }
+    kwargs.update(overrides)
+    return kwargs
 
 
 def _make_decoding_config(tmp_path):

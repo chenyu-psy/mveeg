@@ -128,7 +128,7 @@ def run_decoding_workflow(
     subject_ids: list[str],
     available_subject_ids: list[str],
     cfg: DecodingConfig,
-    subject_results_dir: str | Path,
+    subject_results_dir: str | Path | None = None,
     overwrite: bool = True,
     log_path: str | Path | None = None,
 ) -> dict[str, object]:
@@ -140,8 +140,10 @@ def run_decoding_workflow(
         Subject IDs requested by the caller.
     cfg : DecodingConfig
         Decoding settings for the current analysis.
-    subject_results_dir : str | Path
-        Folder used for subject-level decoding files.
+    subject_results_dir : str | Path | None
+        Optional folder used for subject-level decoding cache files. When
+        ``None``, subjects are processed in memory and no cache files are read
+        or written.
     overwrite : bool
         Whether to rerun subjects that already have saved subject-level outputs.
     log_path : str | Path | None
@@ -153,10 +155,11 @@ def run_decoding_workflow(
         Subject-level outputs and group summary tables for one analysis.
     """
 
+    cached_subject_ids = [] if subject_results_dir is None else list_saved_subject_ids(subject_results_dir)
     run_plan = _build_subject_run_plan(
         requested_subject_ids=subject_ids,
         available_subject_ids=available_subject_ids,
-        cached_subject_ids=list_saved_subject_ids(subject_results_dir),
+        cached_subject_ids=cached_subject_ids,
     )
     print(
         f"Processing {len(run_plan['subjects_to_process'])} requested subjects; "
@@ -168,10 +171,11 @@ def run_decoding_workflow(
         "window_masks": None,
         "reference_ch_names": None,
     }
+    processed_bundles = {}
 
     def process_one_subject(subject_id: str, progress_bar) -> tuple[dict[str, object], bool]:
         used_saved_result = False
-        if not overwrite and subject_result_exists(subject_results_dir, subject_id):
+        if subject_results_dir is not None and not overwrite and subject_result_exists(subject_results_dir, subject_id):
             result_bundle = load_saved_subject_results(subject_results_dir, subject_id)
             progress_bar.update(progress_bar.total)
             used_saved_result = True
@@ -185,6 +189,7 @@ def run_decoding_workflow(
                 subject_results_dir=subject_results_dir,
                 progress_bar=progress_bar,
             )
+        processed_bundles[subject_id] = result_bundle
 
         if shared_state["window_times_ms"] is None:
             shared_state["window_times_ms"] = result_bundle["window_times_ms"]
@@ -203,15 +208,22 @@ def run_decoding_workflow(
     )
 
     failed_subjects = set(_normalize_subject_labels(skipped_subjects_df["subject"])) if len(skipped_subjects_df) > 0 else set()
-    final_subject_ids = [
-        subject_id
-        for subject_id in run_plan["keep_seed_subjects"]
-        if subject_id not in failed_subjects and subject_result_exists(subject_results_dir, subject_id)
-    ]
-    final_subject_bundles = {
-        subject_id: load_saved_subject_results(subject_results_dir, subject_id)
-        for subject_id in final_subject_ids
-    }
+    if subject_results_dir is None:
+        final_subject_bundles = {
+            subject_id: bundle
+            for subject_id, bundle in processed_bundles.items()
+            if subject_id not in failed_subjects
+        }
+    else:
+        final_subject_ids = [
+            subject_id
+            for subject_id in run_plan["keep_seed_subjects"]
+            if subject_id not in failed_subjects and subject_result_exists(subject_results_dir, subject_id)
+        ]
+        final_subject_bundles = {
+            subject_id: load_saved_subject_results(subject_results_dir, subject_id)
+            for subject_id in final_subject_ids
+        }
     return _build_decoding_run_output(
         subject_bundles=final_subject_bundles,
         skipped_subjects_df=skipped_subjects_df,
@@ -223,7 +235,7 @@ def run_generalization_workflow(
     subject_ids: list[str],
     available_subject_ids: list[str],
     cfg: DecodingConfig,
-    subject_results_dir: str | Path,
+    subject_results_dir: str | Path | None = None,
     overwrite: bool = True,
     log_path: str | Path | None = None,
 ) -> dict[str, object]:
@@ -244,19 +256,22 @@ def run_generalization_workflow(
         Group-level accuracy table, trial summary, and skipped-subject table.
     """
 
+    cached_subject_ids = [] if subject_results_dir is None else list_saved_generalization_subject_ids(subject_results_dir)
     run_plan = _build_subject_run_plan(
         requested_subject_ids=subject_ids,
         available_subject_ids=available_subject_ids,
-        cached_subject_ids=list_saved_generalization_subject_ids(subject_results_dir),
+        cached_subject_ids=cached_subject_ids,
     )
     print(
         f"Processing {len(run_plan['subjects_to_process'])} requested subjects; "
         f"final outputs will keep {len(run_plan['keep_seed_subjects'])} subjects before failure filtering."
     )
 
+    processed_bundles = {}
+
     def process_one_subject(subject_id: str, progress_bar) -> tuple[dict[str, object], bool]:
         used_saved_result = False
-        if not overwrite and generalization_subject_result_exists(subject_results_dir, subject_id):
+        if subject_results_dir is not None and not overwrite and generalization_subject_result_exists(subject_results_dir, subject_id):
             result_bundle = load_saved_generalization_subject_results(subject_results_dir, subject_id)
             progress_bar.update(progress_bar.total)
             used_saved_result = True
@@ -267,6 +282,7 @@ def run_generalization_workflow(
                 subject_results_dir=subject_results_dir,
                 progress_bar=progress_bar,
             )
+        processed_bundles[subject_id] = result_bundle
         return result_bundle, used_saved_result
 
     skipped_subjects_df = process_subjects(
@@ -279,15 +295,22 @@ def run_generalization_workflow(
     )
 
     failed_subjects = set(_normalize_subject_labels(skipped_subjects_df["subject"])) if len(skipped_subjects_df) > 0 else set()
-    final_subject_ids = [
-        subject_id
-        for subject_id in run_plan["keep_seed_subjects"]
-        if subject_id not in failed_subjects and generalization_subject_result_exists(subject_results_dir, subject_id)
-    ]
-    final_subject_bundles = {
-        subject_id: load_saved_generalization_subject_results(subject_results_dir, subject_id)
-        for subject_id in final_subject_ids
-    }
+    if subject_results_dir is None:
+        final_subject_bundles = {
+            subject_id: bundle
+            for subject_id, bundle in processed_bundles.items()
+            if subject_id not in failed_subjects
+        }
+    else:
+        final_subject_ids = [
+            subject_id
+            for subject_id in run_plan["keep_seed_subjects"]
+            if subject_id not in failed_subjects and generalization_subject_result_exists(subject_results_dir, subject_id)
+        ]
+        final_subject_bundles = {
+            subject_id: load_saved_generalization_subject_results(subject_results_dir, subject_id)
+            for subject_id in final_subject_ids
+        }
     return _build_generalization_run_output(
         subject_bundles=final_subject_bundles,
         skipped_subjects_df=skipped_subjects_df,
@@ -301,7 +324,7 @@ def _run_single_subject(
     window_times_ms,
     window_masks,
     reference_ch_names,
-    subject_results_dir: str | Path,
+    subject_results_dir: str | Path | None,
     progress_bar,
 ) -> dict[str, object]:
     """Run decoding for one subject and return all subject-level outputs."""
@@ -357,15 +380,16 @@ def _run_single_subject(
         trial_summary_row[f"n_test_{group_name.replace('/', '_').lower()}"] = int(
             output_counts.get(group_name, 0)
         )
-    save_subject_results(
-        output_dir=subject_results_dir,
-        subject_id=subject_id,
-        times_ms=window_times_ms,
-        ch_names=ch_names,
-        decoding_result=result,
-        hyperplane_result=hyperplane,
-        trial_summary_row=trial_summary_row,
-    )
+    if subject_results_dir is not None:
+        save_subject_results(
+            output_dir=subject_results_dir,
+            subject_id=subject_id,
+            times_ms=window_times_ms,
+            ch_names=ch_names,
+            decoding_result=result,
+            hyperplane_result=hyperplane,
+            trial_summary_row=trial_summary_row,
+        )
 
     return {
         "result": result,
@@ -380,7 +404,7 @@ def _run_single_subject(
 def _run_single_subject_generalization(
     subject_id: str,
     cfg: DecodingConfig,
-    subject_results_dir: str | Path,
+    subject_results_dir: str | Path | None,
     progress_bar,
 ) -> dict[str, object]:
     """Run generalization decoding for one subject.
@@ -391,8 +415,8 @@ def _run_single_subject_generalization(
         Subject identifier without the `sub-` prefix.
     cfg : DecodingConfig
         Decoding settings for the current analysis.
-    subject_results_dir : str | Path
-        Folder used for subject-level generalization cache files.
+    subject_results_dir : str | Path | None
+        Optional folder used for subject-level generalization cache files.
     progress_bar : object
         Tqdm progress bar updated after each repeat.
 
@@ -437,13 +461,14 @@ def _run_single_subject_generalization(
             output_counts.get(group_name, 0)
         )
 
-    save_generalization_subject_results(
-        output_dir=subject_results_dir,
-        subject_id=subject_id,
-        times_ms=window_times_ms,
-        generalization_result=result,
-        trial_summary_row=trial_summary_row,
-    )
+    if subject_results_dir is not None:
+        save_generalization_subject_results(
+            output_dir=subject_results_dir,
+            subject_id=subject_id,
+            times_ms=window_times_ms,
+            generalization_result=result,
+            trial_summary_row=trial_summary_row,
+        )
 
     return {
         "result": result,
