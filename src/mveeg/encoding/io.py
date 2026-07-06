@@ -26,8 +26,8 @@ README_FILENAME = "README.txt"
 MODEL_RESULT_SUFFIX = "_encoding_model.npz"
 
 
-def write_pattern_expression_readme(output_dir: str | Path) -> Path:
-    """Write a short README describing the current encoding outputs.
+def write_encoding_model_readme(output_dir: str | Path) -> Path:
+    """Write a short README describing the current encoding-model outputs.
 
     Parameters
     ----------
@@ -48,18 +48,36 @@ def write_pattern_expression_readme(output_dir: str | Path) -> Path:
         "Encoding model outputs\n"
         "\n"
         "Primary modeling tables:\n"
-        "- training_pattern_strength.csv: subject/fold/effect/time rows for observed pattern and null draws.\n"
-        "- testing_effect_coefficients.csv: subject/fold/effect/trial/time coefficient rows.\n"
-        "- testing_effect_coefficients_wide.csv: subject/fold/trial/time rows with intercept and selected predictor coefficients.\n"
+        "- pattern_expression_trial.csv: held-out trial/effect/time signed pattern expression.\n"
+        "- condition_pattern_expression.csv: condition-level expression summaries.\n"
+        "- effect_slope.csv: cross-validated subject-level expression slopes.\n"
         "\n"
-        "Auxiliary tables:\n"
-        "- condition_average_coefficients.csv: condition means for visualization.\n"
-        "- subject_summary.csv and run_summary.csv: quick run checks only.\n"
+        "Diagnostics:\n"
+        "- design_diagnostics.csv: rank, condition-number, predictor, and interaction-cell checks.\n"
+        "- covariance_diagnostics.csv: fold/time covariance and precision diagnostics.\n"
+        "- subject_summary.csv and run_summary.csv: quick run checks.\n"
         "\n"
         "Interpretation notes:\n"
-        "- Training pattern strength is the L2 norm of the raw beta pattern.\n"
-        "- Training rows use data_type = pattern or data_type = null, where null comes from shuffled full-model condition labels.\n"
-        "- Testing values are reconstructed held-out signed coefficients, not residualized projections.\n"
+        "- OLS beta patterns are estimated independently at each time bin.\n"
+        "- Channel covariance is used for expression metrics, not to change beta point estimates.\n"
+        "- Historical basis-coefficient reconstruction and beta-norm strength are not produced.\n"
+    )
+    readme_path.write_text(readme_text, encoding="utf-8")
+    return readme_path
+
+
+def write_pattern_expression_readme(output_dir: str | Path) -> Path:
+    """Write README text for generic precomputed pattern-expression exports."""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    readme_path = output_dir / README_FILENAME
+    readme_text = (
+        "Pattern-expression outputs\n"
+        "\n"
+        "- expression_trial.csv: precomputed trial/effect/time expression rows.\n"
+        "- expression_condition.csv: condition-level expression summaries.\n"
     )
     readme_path.write_text(readme_text, encoding="utf-8")
     return readme_path

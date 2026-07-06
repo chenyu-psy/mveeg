@@ -34,7 +34,7 @@ LEGACY_OUTPUT_FILES = {
 def run_pattern_expression_workflow(
     subject_ids: list[str],
     subject_inputs: dict[str, dict[str, object]],
-    subject_results_dir: str | Path,
+    subject_results_dir: str | Path | None = None,
     overwrite: bool = True,
     log_path: str | Path | None = None,
 ) -> dict[str, object]:
@@ -47,8 +47,9 @@ def run_pattern_expression_workflow(
     subject_inputs : dict[str, dict[str, object]]
         Per-subject arrays used to build trial- and condition-level expression
         tables.
-    subject_results_dir : str | Path
-        Folder used for per-subject cache files.
+    subject_results_dir : str | Path | None
+        Optional folder used for per-subject cache files. When ``None``,
+        subject tables stay in memory and no cache files are read or written.
     overwrite : bool
         Whether to rebuild subjects that already have saved cache files.
     log_path : str | Path | None
@@ -69,7 +70,7 @@ def run_pattern_expression_workflow(
         """Export or reuse one subject and update the shared progress bar."""
 
         used_saved_result = False
-        if not overwrite and subject_result_exists(subject_results_dir, subject_id):
+        if subject_results_dir is not None and not overwrite and subject_result_exists(subject_results_dir, subject_id):
             subject_saved = load_saved_subject_results(subject_results_dir, subject_id)
             trial_table = subject_saved["trial_table"]
             condition_table = subject_saved["condition_table"]
@@ -169,9 +170,9 @@ def export_encoding_outputs(
 def _run_single_subject_export(
     subject_id: str,
     subject_input: dict[str, object],
-    subject_results_dir: str | Path,
+    subject_results_dir: str | Path | None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Build and save pattern-expression tables for one subject."""
+    """Build one subject's pattern-expression tables."""
 
     required_keys = {"condition_labels", "times", "expression_by_effect"}
     missing_keys = sorted(required_keys.difference(subject_input.keys()))
@@ -189,11 +190,12 @@ def _run_single_subject_export(
     )
     condition_table = build_condition_average_pattern_expression_table(trial_table)
 
-    save_subject_results(
-        output_dir=subject_results_dir,
-        subject_id=subject_id,
-        trial_table=trial_table,
-        condition_table=condition_table,
-    )
+    if subject_results_dir is not None:
+        save_subject_results(
+            output_dir=subject_results_dir,
+            subject_id=subject_id,
+            trial_table=trial_table,
+            condition_table=condition_table,
+        )
 
     return trial_table, condition_table

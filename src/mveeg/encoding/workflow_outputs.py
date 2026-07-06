@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .._shared.topography import build_topography_coord_table
-from .io import load_subject_info, write_pattern_expression_readme
+from .io import load_subject_info, write_encoding_model_readme
 
 
 def _normalize_topography_windows(
@@ -225,10 +225,11 @@ def export_encoding_model_outputs(
     subject_summary_df: pd.DataFrame,
     skipped_subjects_df: pd.DataFrame,
     run_summary_df: pd.DataFrame,
-    training_pattern_strength_df: pd.DataFrame,
-    testing_coefficient_df: pd.DataFrame,
-    testing_coefficient_wide_df: pd.DataFrame,
-    condition_coefficient_df: pd.DataFrame,
+    pattern_expression_trial_df: pd.DataFrame,
+    condition_pattern_expression_df: pd.DataFrame,
+    effect_slope_df: pd.DataFrame,
+    design_diagnostics_df: pd.DataFrame,
+    covariance_diagnostics_df: pd.DataFrame,
     config_payload: dict[str, object] | None,
     topography: dict[str, object] | None,
     subject_payloads: dict[str, dict[str, np.ndarray]],
@@ -244,10 +245,10 @@ def export_encoding_model_outputs(
         Output filename registry for the encoding model workflow.
     subject_summary_df, skipped_subjects_df, run_summary_df : pd.DataFrame
         Run summary tables.
-    training_pattern_strength_df, testing_coefficient_df : pd.DataFrame
-        Long training and testing model outputs.
-    testing_coefficient_wide_df, condition_coefficient_df : pd.DataFrame
-        Wide testing and condition-averaged output tables.
+    pattern_expression_trial_df, condition_pattern_expression_df : pd.DataFrame
+        Held-out pattern-expression output tables.
+    effect_slope_df, design_diagnostics_df, covariance_diagnostics_df : pd.DataFrame
+        Subject-level effect slopes and diagnostics.
     config_payload : dict[str, object] | None
         Optional JSON-serializable run configuration.
     topography : dict[str, object] | None
@@ -275,60 +276,104 @@ def export_encoding_model_outputs(
         if skipped_path.exists():
             skipped_path.unlink()
     run_summary_df.to_csv(output_dir / output_files["run_summary"], index=False)
-    training_pattern_strength_df.to_csv(
-        output_dir / output_files["training_pattern_strength"],
+    pattern_expression_trial_df.to_csv(
+        output_dir / output_files["pattern_expression_trial"],
         index=False,
     )
-    testing_coefficient_df.to_csv(
-        output_dir / output_files["testing_effect_coefficients"],
+    condition_pattern_expression_df.to_csv(
+        output_dir / output_files["condition_pattern_expression"],
         index=False,
     )
-    testing_coefficient_wide_df.to_csv(
-        output_dir / output_files["testing_effect_coefficients_wide"],
+    effect_slope_df.to_csv(
+        output_dir / output_files["effect_slope"],
         index=False,
     )
-    condition_coefficient_df.to_csv(
-        output_dir / output_files["condition_average_coefficients"],
+    design_diagnostics_df.to_csv(
+        output_dir / output_files["design_diagnostics"],
         index=False,
     )
-    write_pattern_expression_readme(output_dir)
+    covariance_diagnostics_df.to_csv(
+        output_dir / output_files["covariance_diagnostics"],
+        index=False,
+    )
+    write_encoding_model_readme(output_dir)
     if config_payload is not None:
         with open(output_dir / "config.json", "w", encoding="utf-8") as f:
             json.dump(config_payload, f, indent=2)
 
-    topography_values_df = None
-    topography_coords_df = None
-    if topography is not None:
-        has_single_window = "time_window_ms" in topography
-        has_named_windows = "time_windows_ms" in topography
-        if has_single_window == has_named_windows:
-            raise ValueError(
-                "topography must include exactly one of 'time_window_ms' "
-                "or 'time_windows_ms'."
-            )
+    topography_outputs = build_encoding_topography_outputs(
+        topography=topography,
+        subject_payloads=subject_payloads,
+        loader_cfg=loader_cfg,
+    )
+    topography_values_df = topography_outputs["topography_values_df"]
+    topography_coords_df = topography_outputs["topography_coords_df"]
+    if topography_values_df is not None and topography_coords_df is not None:
         topography_values_path = output_dir / output_files["topography_values"]
         topography_coords_path = output_dir / output_files["topography_coords"]
         topography_values_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if has_single_window:
-            topography_values_df = build_encoding_topography_value_table(
-                subject_payloads=subject_payloads,
-                time_window_ms=topography["time_window_ms"],
-            )
-        else:
-            topography_values_df = build_encoding_topography_value_table(
-                subject_payloads=subject_payloads,
-                time_windows_ms=topography["time_windows_ms"],
-            )
-        first_subject = next(iter(subject_payloads))
-        first_payload = subject_payloads[first_subject]
-        topography_coords_df = build_topography_coord_table(
-            info=load_subject_info(first_subject, loader_cfg),
-            channels=first_payload["ch_names"].astype(str).tolist(),
-        )
         topography_values_df.to_csv(topography_values_path, index=False)
         topography_coords_df.to_csv(topography_coords_path, index=False)
 
+    return {
+        "topography_values_df": topography_values_df,
+        "topography_coords_df": topography_coords_df,
+    }
+
+
+def build_encoding_topography_outputs(
+    *,
+    topography: dict[str, object] | None,
+    subject_payloads: dict[str, dict[str, np.ndarray]],
+    loader_cfg,
+) -> dict[str, pd.DataFrame | None]:
+    """Build optional encoding topography result tables without writing files.
+
+    Parameters
+    ----------
+    topography : dict[str, object] | None
+        Optional topography settings. Provide exactly one of ``time_window_ms``
+        or ``time_windows_ms``.
+    subject_payloads : dict[str, dict[str, numpy.ndarray]]
+        Subject-level model payloads used for topography values.
+    loader_cfg : object
+        Encoding loader configuration used for channel-coordinate export.
+
+    Returns
+    -------
+    dict[str, pandas.DataFrame | None]
+        Topography value and coordinate tables, or ``None`` when topography is
+        not requested.
+    """
+
+    if topography is None:
+        return {"topography_values_df": None, "topography_coords_df": None}
+
+    has_single_window = "time_window_ms" in topography
+    has_named_windows = "time_windows_ms" in topography
+    if has_single_window == has_named_windows:
+        raise ValueError(
+            "topography must include exactly one of 'time_window_ms' "
+            "or 'time_windows_ms'."
+        )
+
+    if has_single_window:
+        topography_values_df = build_encoding_topography_value_table(
+            subject_payloads=subject_payloads,
+            time_window_ms=topography["time_window_ms"],
+        )
+    else:
+        topography_values_df = build_encoding_topography_value_table(
+            subject_payloads=subject_payloads,
+            time_windows_ms=topography["time_windows_ms"],
+        )
+
+    first_subject = next(iter(subject_payloads))
+    first_payload = subject_payloads[first_subject]
+    topography_coords_df = build_topography_coord_table(
+        info=load_subject_info(first_subject, loader_cfg),
+        channels=first_payload["ch_names"].astype(str).tolist(),
+    )
     return {
         "topography_values_df": topography_values_df,
         "topography_coords_df": topography_coords_df,

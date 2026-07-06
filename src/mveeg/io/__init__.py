@@ -13,6 +13,22 @@ from .bids import (
     get_subject_ids_from_derivatives,
     normalize_subject_id,
 )
+from .results import (
+    init_result_store,
+    mark_result_subjects_pending,
+    read_internal_table,
+    read_result_subject_status,
+    read_result_tables,
+    replace_result_tables,
+    replace_subject_table_rows,
+    resolve_result_file,
+    result_config_hash,
+    result_skipped_table,
+    result_store_subjects_to_run,
+    run_incremental_result_store,
+    update_result_subject_status,
+    write_result_tables,
+)
 
 __all__ = [
     "normalize_subject_id",
@@ -22,4 +38,18 @@ __all__ = [
     "find_subject_dir",
     "derivative_file_path",
     "get_subject_ids_from_derivatives",
+    "init_result_store",
+    "mark_result_subjects_pending",
+    "read_internal_table",
+    "read_result_subject_status",
+    "resolve_result_file",
+    "read_result_tables",
+    "replace_result_tables",
+    "replace_subject_table_rows",
+    "result_config_hash",
+    "result_skipped_table",
+    "result_store_subjects_to_run",
+    "run_incremental_result_store",
+    "update_result_subject_status",
+    "write_result_tables",
 ]

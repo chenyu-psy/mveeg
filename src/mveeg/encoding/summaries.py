@@ -10,215 +10,6 @@ import numpy as np
 import pandas as pd
 
 
-def compute_pattern_strength(pattern: np.ndarray) -> np.ndarray:
-    """Return the L2 pattern strength across channels for each time point.
-
-    Parameters
-    ----------
-    pattern : np.ndarray
-        Beta pattern with shape ``(n_channels, n_times)``.
-
-    Returns
-    -------
-    np.ndarray
-        Pattern-strength time series with shape ``(n_times,)``.
-    """
-
-    if pattern.ndim != 2:
-        raise ValueError("pattern must have shape (n_channels, n_times).")
-
-    return np.sqrt(np.sum(np.square(pattern.astype(float)), axis=0))
-
-
-def build_training_pattern_strength_table(
-    *,
-    subject: str,
-    fold_id: int,
-    effect: str,
-    times_s: np.ndarray | list[float],
-    pattern_strength: np.ndarray,
-    data_type: str,
-    null_draw: int,
-    n_null_repeats: int,
-) -> pd.DataFrame:
-    """Build a long training table for one fold/effect/data-type combination.
-
-    Parameters
-    ----------
-    subject : str
-        Subject identifier.
-    fold_id : int
-        Cross-validation fold identifier.
-    effect : str
-        Effect label written to the long table.
-    times_s : np.ndarray | list[float]
-        Time axis in seconds.
-    pattern_strength : np.ndarray
-        One-dimensional pattern-strength series aligned with ``times_s``.
-    data_type : str
-        One of ``"pattern"`` or ``"null"``.
-    null_draw : int
-        Null-draw index. Use ``0`` for the observed pattern rows.
-    n_null_repeats : int
-        Number of null draws requested for this run.
-
-    Returns
-    -------
-    pd.DataFrame
-        Long table with columns ``subject``, ``fold``, ``effect``, ``time_ms``,
-        ``data_type``, ``pattern_strength``, ``null_draw``, and
-        ``n_null_repeats``.
-    """
-
-    times_s = np.asarray(times_s, dtype=float)
-    pattern_strength = np.asarray(pattern_strength, dtype=float)
-
-    if pattern_strength.ndim != 1:
-        raise ValueError("pattern_strength must be one-dimensional.")
-    if len(pattern_strength) != len(times_s):
-        raise ValueError("pattern_strength length must match times_s length.")
-    if data_type not in {"pattern", "null"}:
-        raise ValueError("data_type must be 'pattern' or 'null'.")
-
-    return pd.DataFrame(
-        {
-            "subject": np.repeat(str(subject), len(times_s)),
-            "fold": np.repeat(int(fold_id), len(times_s)),
-            "effect": np.repeat(str(effect), len(times_s)),
-            "time_ms": times_s * 1000.0,
-            "data_type": np.repeat(str(data_type), len(times_s)),
-            "pattern_strength": pattern_strength,
-            "null_draw": np.repeat(int(null_draw), len(times_s)),
-            "n_null_repeats": np.repeat(int(n_null_repeats), len(times_s)),
-        }
-    )
-
-
-def build_testing_coefficient_tables(
-    *,
-    subject: str,
-    fold_id: int,
-    condition_labels: np.ndarray | list[str],
-    trial_index: np.ndarray | list[int],
-    times_s: np.ndarray | list[float],
-    coef_by_name: dict[str, np.ndarray],
-    coef_by_predictor: dict[str, np.ndarray],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Build wide and long testing tables for held-out effect coefficients.
-
-    Parameters
-    ----------
-    subject : str
-        Subject identifier.
-    fold_id : int
-        Cross-validation fold identifier.
-    condition_labels : np.ndarray | list[str]
-        Condition label for each held-out trial.
-    trial_index : np.ndarray | list[int]
-        Trial index for each held-out trial.
-    times_s : np.ndarray | list[float]
-        Time axis in seconds.
-    coef_by_name : dict[str, np.ndarray]
-        Trial-by-time coefficient matrix for each reconstructed basis name.
-        This may include ``"intercept"`` when the design formula has one.
-    coef_by_predictor : dict[str, np.ndarray]
-        Trial-by-time coefficient matrix for each modeled predictor.
-
-    Returns
-    -------
-    tuple[pd.DataFrame, pd.DataFrame]
-        Wide table with coefficient columns and long table with ``effect`` and
-        ``coefficient`` columns.
-    """
-
-    condition_labels = np.asarray(condition_labels, dtype=object)
-    trial_index = np.asarray(trial_index, dtype=int)
-    times_s = np.asarray(times_s, dtype=float)
-
-    matrices = {
-        f"coef_{coef_name}": np.asarray(coef_values, dtype=float)
-        for coef_name, coef_values in coef_by_name.items()
-    }
-    for name, matrix in matrices.items():
-        if matrix.ndim != 2:
-            raise ValueError(f"{name} must be 2D.")
-
-    first_matrix = next(iter(matrices.values()))
-    n_trials, n_times = first_matrix.shape
-    for name, matrix in matrices.items():
-        if matrix.shape != (n_trials, n_times):
-            raise ValueError(f"{name} must have shape {(n_trials, n_times)}.")
-    if len(condition_labels) != n_trials:
-        raise ValueError("condition_labels length must match coefficient rows.")
-    if len(trial_index) != n_trials:
-        raise ValueError("trial_index length must match coefficient rows.")
-    if len(times_s) != n_times:
-        raise ValueError("times_s length must match coefficient columns.")
-
-    wide_data = {
-        "subject": np.repeat(str(subject), n_trials * n_times),
-        "fold": np.repeat(int(fold_id), n_trials * n_times),
-        "condition": np.repeat(condition_labels.astype(str), n_times),
-        "trial_index": np.repeat(trial_index.astype(int), n_times),
-        "time_ms": np.tile(times_s * 1000.0, n_trials),
-    }
-    for coef_name, coef_values in coef_by_name.items():
-        wide_data[f"coef_{coef_name}"] = np.asarray(coef_values, dtype=float).reshape(
-            -1
-        )
-    wide_df = pd.DataFrame(wide_data)
-
-    long_rows = []
-    base_cols = ["subject", "fold", "condition", "trial_index", "time_ms"]
-    for predictor_name in coef_by_predictor:
-        coef_col = f"coef_{predictor_name}"
-        long_rows.append(
-            wide_df.loc[:, base_cols].assign(
-                effect=predictor_name,
-                coefficient=wide_df[coef_col].to_numpy(dtype=float),
-            )
-        )
-    long_df = pd.concat(long_rows, ignore_index=True)
-
-    return wide_df, long_df
-
-
-def build_condition_average_coefficient_table(
-    trial_table: pd.DataFrame,
-) -> pd.DataFrame:
-    """Average testing coefficients by subject, effect, condition, and time.
-
-    Parameters
-    ----------
-    trial_table : pd.DataFrame
-        Long testing table from ``build_testing_coefficient_tables``.
-
-    Returns
-    -------
-    pd.DataFrame
-        Condition-averaged table with columns ``subject``, ``effect``,
-        ``condition``, ``time_ms``, and ``mean_coefficient``.
-    """
-
-    required_cols = {
-        "subject",
-        "effect",
-        "condition",
-        "time_ms",
-        "coefficient",
-    }
-    missing_cols = sorted(required_cols.difference(trial_table.columns))
-    if len(missing_cols) > 0:
-        raise ValueError(f"trial_table is missing required columns: {missing_cols}")
-
-    return (
-        trial_table.groupby(["subject", "effect", "condition", "time_ms"], as_index=False)
-        .agg(mean_coefficient=("coefficient", "mean"))
-        .sort_values(["subject", "effect", "condition", "time_ms"])
-        .reset_index(drop=True)
-    )
-
-
 def _validate_expression_inputs(
     condition_labels: np.ndarray,
     times: np.ndarray,
@@ -396,3 +187,213 @@ def build_condition_average_pattern_expression_table(
         .sort_values(["subject", "condition", "effect", "time"])
         .reset_index(drop=True)
     )
+
+
+def build_pattern_expression_trial_table(
+    *,
+    subject: str,
+    fold_id: int,
+    condition_labels: np.ndarray | list[str],
+    trial_index: np.ndarray | list[int],
+    times_s: np.ndarray | list[float],
+    effect_names: list[str],
+    expression: np.ndarray,
+    covariance_method: str,
+) -> pd.DataFrame:
+    """Build the primary held-out trial-level pattern-expression table.
+
+    Parameters
+    ----------
+    subject : str
+        Subject identifier written to every output row.
+    fold_id : int
+        Cross-validation fold number.
+    condition_labels : np.ndarray | list[str]
+        Condition label for each held-out trial.
+    trial_index : np.ndarray | list[int]
+        Original trial index for each held-out trial.
+    times_s : np.ndarray | list[float]
+        Time values in seconds.
+    effect_names : list[str]
+        Names for modeled non-intercept effects.
+    expression : np.ndarray
+        Expression values with shape ``(n_trials, n_effects, n_times)``.
+    covariance_method : str
+        Covariance method used to compute expression.
+
+    Returns
+    -------
+    pd.DataFrame
+        Long table with ``expression`` values in milliseconds.
+    """
+
+    condition_labels = np.asarray(condition_labels, dtype=object)
+    trial_index = np.asarray(trial_index, dtype=int)
+    times_s = np.asarray(times_s, dtype=float)
+    expression = np.asarray(expression, dtype=float)
+    if expression.ndim != 3:
+        raise ValueError("expression must have shape (n_trials, n_effects, n_times).")
+
+    n_trials, n_effects, n_times = expression.shape
+    if len(condition_labels) != n_trials:
+        raise ValueError("condition_labels length must match expression trials.")
+    if len(trial_index) != n_trials:
+        raise ValueError("trial_index length must match expression trials.")
+    if len(effect_names) != n_effects:
+        raise ValueError("effect_names length must match expression effects.")
+    if len(times_s) != n_times:
+        raise ValueError("times_s length must match expression times.")
+
+    rows = []
+    for effect_ix, effect_name in enumerate(effect_names):
+        rows.append(
+            pd.DataFrame(
+                {
+                    "subject": np.repeat(str(subject), n_trials * n_times),
+                    "fold": np.repeat(int(fold_id), n_trials * n_times),
+                    "trial_index": np.repeat(trial_index, n_times),
+                    "condition": np.repeat(condition_labels.astype(str), n_times),
+                    "effect": np.repeat(str(effect_name), n_trials * n_times),
+                    "time_ms": np.tile(times_s * 1000.0, n_trials),
+                    "expression": expression[:, effect_ix, :].reshape(-1),
+                    "covariance_method": np.repeat(
+                        str(covariance_method), n_trials * n_times
+                    ),
+                }
+            )
+        )
+    return pd.concat(rows, ignore_index=True)
+
+
+def build_condition_pattern_expression_table(
+    trial_table: pd.DataFrame,
+) -> pd.DataFrame:
+    """Average held-out expression by subject, condition, effect, and time.
+
+    Parameters
+    ----------
+    trial_table : pd.DataFrame
+        Trial-level table from ``build_pattern_expression_trial_table``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Condition-level expression summary with mean, SD, SE, and trial count.
+    """
+
+    required_cols = {
+        "subject",
+        "condition",
+        "effect",
+        "time_ms",
+        "expression",
+        "covariance_method",
+    }
+    missing_cols = sorted(required_cols.difference(trial_table.columns))
+    if len(missing_cols) > 0:
+        raise ValueError(f"trial_table is missing required columns: {missing_cols}")
+
+    summary = (
+        trial_table.groupby(
+            ["subject", "condition", "effect", "time_ms", "covariance_method"],
+            as_index=False,
+        )
+        .agg(
+            expression_mean=("expression", "mean"),
+            expression_sd=("expression", "std"),
+            n_trials=("trial_index", "nunique"),
+        )
+        .sort_values(["subject", "condition", "effect", "time_ms"])
+        .reset_index(drop=True)
+    )
+    summary["expression_se"] = summary["expression_sd"] / np.sqrt(
+        summary["n_trials"].astype(float)
+    )
+    return summary.loc[
+        :,
+        [
+            "subject",
+            "condition",
+            "effect",
+            "time_ms",
+            "expression_mean",
+            "expression_sd",
+            "expression_se",
+            "n_trials",
+            "covariance_method",
+        ],
+    ]
+
+
+def build_effect_slope_table(
+    *,
+    subject: str,
+    trial_expression_df: pd.DataFrame,
+    trial_design: pd.DataFrame,
+    effect_names: list[str],
+    times_s: np.ndarray | list[float],
+    covariance_method: str,
+) -> pd.DataFrame:
+    """Fit subject-level expression slopes for each effect and time.
+
+    Parameters
+    ----------
+    subject : str
+        Subject identifier.
+    trial_expression_df : pd.DataFrame
+        Held-out expression table containing all folds for one subject.
+    trial_design : pd.DataFrame
+        Trial-level design table with one row per original trial and columns
+        matching ``effect_names``.
+    effect_names : list[str]
+        Non-intercept effects to summarize.
+    times_s : np.ndarray | list[float]
+        Time values in seconds.
+    covariance_method : str
+        Covariance method used for expression values.
+
+    Returns
+    -------
+    pd.DataFrame
+        Subject-level slope table.
+    """
+
+    times_ms = np.asarray(times_s, dtype=float) * 1000.0
+    rows = []
+    for effect_name in effect_names:
+        if effect_name not in trial_design.columns:
+            raise ValueError(f"trial_design is missing effect column '{effect_name}'.")
+        x_by_trial = trial_design[effect_name].to_numpy(dtype=float)
+        for time_ms in times_ms:
+            rows_df = trial_expression_df.loc[
+                (trial_expression_df["effect"] == effect_name)
+                & (trial_expression_df["time_ms"] == time_ms)
+            ]
+            y = rows_df["expression"].to_numpy(dtype=float)
+            trial_ix = rows_df["trial_index"].to_numpy(dtype=int)
+            x = x_by_trial[trial_ix]
+            valid = np.isfinite(x) & np.isfinite(y)
+            if valid.sum() < 2 or np.nanstd(x[valid]) == 0:
+                slope = np.nan
+                intercept = np.nan
+                n_trials = int(valid.sum())
+            else:
+                design = np.column_stack([np.ones(valid.sum(), dtype=float), x[valid]])
+                coef, *_ = np.linalg.lstsq(design, y[valid], rcond=None)
+                intercept = float(coef[0])
+                slope = float(coef[1])
+                n_trials = int(valid.sum())
+            rows.append(
+                {
+                    "subject": str(subject),
+                    "effect": str(effect_name),
+                    "time_ms": float(time_ms),
+                    "slope": slope,
+                    "intercept": intercept,
+                    "n_trials": n_trials,
+                    "n_folds": int(rows_df["fold"].nunique()),
+                    "covariance_method": str(covariance_method),
+                }
+            )
+
+    return pd.DataFrame(rows)
