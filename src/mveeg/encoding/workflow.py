@@ -36,7 +36,7 @@ from .workflow_design import run_encoding_design_check, validate_glm_formula
 from .workflow_model import (
     MODEL_OUTPUT_FILES,
     compare_encoding_models_workflow,
-    run_encoding_workflow,
+    run_regression_model_workflow,
 )
 from .io import load_subject_info
 from .workflow_paths import infer_experiment_settings, prepare_encoding_paths
@@ -55,8 +55,8 @@ __all__ = [
     "export_encoding_outputs",
     "infer_experiment_settings",
     "prepare_encoding_paths",
-    "run_encoding",
-    "run_encoding_workflow",
+    "run_regression_model",
+    "run_regression_model_workflow",
     "run_encoding_design_check",
     "run_pattern_expression",
     "run_pattern_expression_workflow",
@@ -81,18 +81,19 @@ _PATTERN_STORE_TABLES = {
 }
 
 
-def run_encoding(
+def run_regression_model(
     *,
     data_dir: str | Path,
     subject_ids: list[str],
     trial_filters: dict[str, object],
     encoding_params: dict[str, object],
-    condition_encoding: pd.DataFrame,
     condition_label_map: dict[str, list[str]],
-    glm_formula: str,
+    formula: str,
     overwrite: bool,
     name: str,
     file: str | Path | None = None,
+    metadata_assign=None,
+    penalty: dict[str, float] | None = None,
     train_condition_labels: list[str] | tuple[str, ...] | None = None,
     topography: dict[str, object] | None = None,
     experiment_name: str | None = None,
@@ -110,14 +111,10 @@ def run_encoding(
         Trial inclusion and exclusion settings.
     encoding_params : dict[str, object]
         Time-window, channel-drop, cross-validation, and null settings.
-    condition_encoding : pd.DataFrame
-        Condition-level design table with one ``condition`` column and one
-        column per modeled predictor.
     condition_label_map : dict[str, list[str]]
         Mapping from analysis condition labels to raw metadata labels.
-    glm_formula : str
-        Additive R-style formula used to select predictors from
-        ``condition_encoding``.
+    formula : str
+        R-style formula used to select metadata predictors and random terms.
     overwrite : bool
         Whether to recompute when ``file`` already exists.
     name : str
@@ -193,13 +190,14 @@ def run_encoding(
 
     result_file = resolve_result_file(file)
     if result_file is not None:
-        return _run_encoding_store(
+        return _run_regression_model_store(
             result_file=result_file,
             subject_ids=subject_ids,
             loader_cfg=loader_cfg,
-            condition_encoding=condition_encoding,
             design_cfg=design_cfg,
-            glm_formula=glm_formula,
+            formula=formula,
+            metadata_assign=metadata_assign,
+            penalty=penalty,
             source_to_condition=source_to_condition,
             train_condition_labels=train_condition_labels,
             overwrite=overwrite,
@@ -217,9 +215,9 @@ def run_encoding(
                 "experiment_name": experiment_name,
                 "trial_filters": trial_filters,
                 "encoding_params": encoding_params,
-                "condition_encoding": condition_encoding.to_dict(orient="list"),
                 "condition_label_map": condition_label_map,
-                "glm_formula": glm_formula,
+                "formula": formula,
+                "penalty": penalty,
                 "train_condition_labels": train_condition_labels,
                 "topography": topography,
                 "cond_col": cond_col,
@@ -227,13 +225,14 @@ def run_encoding(
         )
 
     print(f"Running {name}")
-    run_output = run_encoding_workflow(
+    run_output = run_regression_model_workflow(
         subject_ids=subject_ids,
         subject_results_dir=None,
         loader_cfg=loader_cfg,
-        condition_encoding=condition_encoding,
         design_cfg=design_cfg,
-        glm_formula=glm_formula,
+        formula=formula,
+        metadata_assign=metadata_assign,
+        penalty=penalty,
         source_to_condition=source_to_condition,
         train_condition_labels=train_condition_labels,
         overwrite=overwrite,
@@ -369,14 +368,15 @@ def compare_encoding_models(
     }
 
 
-def _run_encoding_store(
+def _run_regression_model_store(
     *,
     result_file: Path,
     subject_ids: list[str],
     loader_cfg,
-    condition_encoding: pd.DataFrame,
     design_cfg: EncodingConfig,
-    glm_formula: str,
+    formula: str,
+    metadata_assign,
+    penalty: dict[str, float] | None,
     source_to_condition: dict[str, str],
     train_condition_labels: list[str] | tuple[str, ...] | None,
     overwrite: bool,
@@ -400,13 +400,14 @@ def _run_encoding_store(
         result_file,
         subject_ids=subject_ids,
         overwrite=overwrite,
-        process_subjects=lambda subjects_to_run: _process_encoding_store_subjects(
+        process_subjects=lambda subjects_to_run: _process_regression_model_store_subjects(
             result_file=result_file,
             subject_ids=subjects_to_run,
             loader_cfg=loader_cfg,
-            condition_encoding=condition_encoding,
             design_cfg=design_cfg,
-            glm_formula=glm_formula,
+            formula=formula,
+            metadata_assign=metadata_assign,
+            penalty=penalty,
             source_to_condition=source_to_condition,
             train_condition_labels=train_condition_labels,
             cv_n_splits=cv_n_splits,
@@ -417,7 +418,7 @@ def _run_encoding_store(
             covariance=covariance,
             run_name=run_name,
         ),
-        finalize=lambda: _finalize_encoding_store(
+        finalize=lambda: _finalize_regression_model_store(
             result_file=result_file,
             loader_cfg=loader_cfg,
             run_name=run_name,
@@ -429,14 +430,15 @@ def _run_encoding_store(
     )
 
 
-def _process_encoding_store_subjects(
+def _process_regression_model_store_subjects(
     *,
     result_file: Path,
     subject_ids: list[str],
     loader_cfg,
-    condition_encoding: pd.DataFrame,
     design_cfg: EncodingConfig,
-    glm_formula: str,
+    formula: str,
+    metadata_assign,
+    penalty: dict[str, float] | None,
     source_to_condition: dict[str, str],
     train_condition_labels: list[str] | tuple[str, ...] | None,
     cv_n_splits: int,
@@ -447,13 +449,14 @@ def _process_encoding_store_subjects(
     covariance: str,
     run_name: str,
 ) -> None:
-    run_output = run_encoding_workflow(
+    run_output = run_regression_model_workflow(
         subject_ids=subject_ids,
         subject_results_dir=None,
         loader_cfg=loader_cfg,
-        condition_encoding=condition_encoding,
         design_cfg=design_cfg,
-        glm_formula=glm_formula,
+        formula=formula,
+        metadata_assign=metadata_assign,
+        penalty=penalty,
         source_to_condition=source_to_condition,
         train_condition_labels=train_condition_labels,
         overwrite=True,
@@ -490,7 +493,7 @@ def _process_encoding_store_subjects(
     )
 
 
-def _finalize_encoding_store(
+def _finalize_regression_model_store(
     *,
     result_file: Path,
     loader_cfg,

@@ -24,7 +24,12 @@ from .summaries import (
     build_effect_slope_table,
     build_pattern_expression_trial_table,
 )
-from .workflow_design import build_formula_condition_encoding, run_encoding_design_check
+from .validation import validate_encoding
+from .workflow_design import (
+    build_formula_metadata_design,
+    build_formula_condition_encoding,
+    run_encoding_design_check,
+)
 from .workflow_outputs import build_encoding_topography_outputs, export_encoding_model_outputs
 
 
@@ -125,21 +130,66 @@ def _load_subject_arrays(
         )
 
     metadata = metadata.copy()
-    metadata["condition"] = metadata[source_condition_col].astype(str).map(
+    metadata["model_condition"] = metadata[source_condition_col].astype(str).map(
         source_to_condition
     )
-    condition_values = metadata["condition"].to_numpy(dtype=object).astype(str)
+    condition_values = metadata["model_condition"].to_numpy(dtype=object).astype(str)
     return data, condition_values, times_s, list(ch_names), metadata
 
 
 def _build_subject_design(
+    *,
+    metadata: pd.DataFrame,
+    formula: str,
+    design_cfg: EncodingConfig,
+    fit_indices: np.ndarray | list[int] | None = None,
+) -> tuple[np.ndarray, list[str], pd.DataFrame, dict[str, object], object]:
+    """Build and validate one subject's formula-selected metadata design."""
+
+    design_matrix, design_names, trial_encoding, parsed_formula = (
+        build_formula_metadata_design(
+            metadata,
+            formula,
+            fit_indices=fit_indices,
+        )
+    )
+    effective_design_cfg = EncodingConfig(
+        add_intercept=bool(parsed_formula["add_intercept"]),
+        validation_mode=design_cfg.validation_mode,
+        tolerance=design_cfg.tolerance,
+    )
+    validation = validate_encoding(
+        design_matrix,
+        design_names,
+        mode=effective_design_cfg.validation_mode,
+        tol=effective_design_cfg.tolerance,
+    )
+    has_random = "random" in parsed_formula["term_types"]
+    if validation.rank < validation.n_cols and not has_random:
+        raise ValueError(
+            f"Design matrix is rank deficient (rank={validation.rank}, "
+            f"columns={validation.n_cols})."
+        )
+    if not validation.is_valid and not has_random:
+        raise ValueError("; ".join(validation.messages))
+
+    return (
+        design_matrix,
+        list(design_names),
+        trial_encoding,
+        parsed_formula,
+        validation,
+    )
+
+
+def _build_condition_subject_design(
     *,
     condition_values: np.ndarray,
     condition_encoding: pd.DataFrame,
     glm_formula: str,
     design_cfg: EncodingConfig,
 ) -> tuple[np.ndarray, list[str], pd.DataFrame, dict[str, object], object]:
-    """Build and validate one subject's formula-selected design."""
+    """Build the legacy condition-level design used by model comparison."""
 
     formula_condition_encoding, parsed_formula = build_formula_condition_encoding(
         condition_encoding,
@@ -171,6 +221,74 @@ def _build_subject_design(
         parsed_formula,
         validation,
     )
+
+
+def _apply_metadata_assign(metadata: pd.DataFrame, metadata_assign) -> pd.DataFrame:
+    """Apply optional trial metadata assignment."""
+
+    if metadata_assign is None:
+        return metadata.copy()
+    output = metadata_assign(metadata.copy())
+    if not isinstance(output, pd.DataFrame):
+        raise TypeError("metadata_assign must return a pandas DataFrame.")
+    if len(output) != len(metadata):
+        raise ValueError("metadata_assign must preserve the number of trial rows.")
+    return output.reset_index(drop=True)
+
+
+def _normalize_penalty(penalty: dict[str, float] | None) -> dict[str, float]:
+    """Return fixed/random ridge penalties."""
+
+    if penalty is None:
+        penalty = {"fixed": 1.0, "random": 0.1}
+    allowed = {"fixed", "random"}
+    unknown = sorted(set(penalty).difference(allowed))
+    if len(unknown) > 0:
+        raise ValueError(f"penalty only supports keys {sorted(allowed)}; got {unknown}.")
+    values = {
+        "fixed": float(penalty.get("fixed", 1.0)),
+        "random": float(penalty.get("random", 0.1)),
+    }
+    if values["fixed"] < 0 or values["random"] < 0:
+        raise ValueError("penalty values must be nonnegative numbers.")
+    return values
+
+
+def _penalty_vector(term_types: list[str], penalty: dict[str, float]) -> np.ndarray:
+    """Build per-column sqrt(lambda) penalty vector."""
+
+    values = []
+    for term_type in term_types:
+        if term_type == "intercept":
+            values.append(0.0)
+        elif term_type == "fixed":
+            values.append(np.sqrt(penalty["fixed"]))
+        elif term_type == "random":
+            values.append(np.sqrt(penalty["random"]))
+        else:
+            raise ValueError(f"Unknown term type '{term_type}'.")
+    return np.asarray(values, dtype=float)
+
+
+def _fit_time_resolved_multivariate_ridge(
+    *,
+    data: np.ndarray,
+    design_matrix: np.ndarray,
+    penalty_sqrt: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit time-resolved multivariate ridge by augmented least squares."""
+
+    n_params = design_matrix.shape[1]
+    if len(penalty_sqrt) != n_params:
+        raise ValueError("penalty_sqrt length must match design columns.")
+    design_aug = np.vstack([design_matrix, np.diag(penalty_sqrt)])
+    zeros = np.zeros((n_params, data.shape[1]), dtype=float)
+    betas = np.empty((n_params, data.shape[1], data.shape[2]), dtype=float)
+    for time_ix in range(data.shape[2]):
+        betas[:, :, time_ix] = np.linalg.pinv(design_aug) @ np.vstack(
+            [data[:, :, time_ix], zeros]
+        )
+    return betas, design_aug
 
 
 def _condition_cv(
@@ -354,9 +472,10 @@ def _fit_one_encoding_subject(
     source_condition_col: str,
     source_to_condition: dict[str, str],
     train_condition_labels: tuple[str, ...] | None,
-    condition_encoding: pd.DataFrame,
     design_cfg: EncodingConfig,
-    glm_formula: str,
+    formula: str,
+    metadata_assign,
+    penalty: dict[str, float] | None,
     covariance: str,
     cv_n_splits: int,
     cv_shuffle: bool,
@@ -368,7 +487,7 @@ def _fit_one_encoding_subject(
     """Fit one subject's cross-validated pattern-expression model."""
 
     progress_bar.set_postfix_str("loading input")
-    data, condition_values, times_s, ch_names, _metadata = _load_subject_arrays(
+    data, condition_values, times_s, ch_names, metadata = _load_subject_arrays(
         subject_id=subject_id,
         loader_cfg=loader_cfg,
         source_condition_col=source_condition_col,
@@ -376,14 +495,8 @@ def _fit_one_encoding_subject(
         time_window_ms=time_window_ms,
     )
     progress_bar.set_postfix_str("preparing")
-    design_matrix, design_names, trial_encoding, parsed_formula, validation = (
-        _build_subject_design(
-            condition_values=condition_values,
-            condition_encoding=condition_encoding,
-            glm_formula=glm_formula,
-            design_cfg=design_cfg,
-        )
-    )
+    metadata = _apply_metadata_assign(metadata, metadata_assign)
+    ridge_penalty = _normalize_penalty(penalty)
 
     if train_condition_labels is None:
         train_condition_mask = np.ones(len(condition_values), dtype=bool)
@@ -404,33 +517,14 @@ def _fit_one_encoding_subject(
         cv_shuffle=cv_shuffle,
         cv_random_state=cv_random_state,
     )
-    effect_names = [name for name in design_names if name != "intercept"]
-    effect_indices = [design_names.index(name) for name in effect_names]
-
-    raw_beta_patterns = np.empty(
-        (cv_n_splits, len(design_names), data.shape[1], data.shape[2]),
-        dtype=float,
-    )
+    raw_beta_patterns = None
+    payload_predictor_names = None
+    payload_term_types = None
     trial_expression_tables = []
     covariance_rows = []
-    design_rows = _design_diagnostic_rows(
-        subject=subject_id,
-        model="encoding",
-        validation=validation,
-        design_matrix=design_matrix,
-        design_names=design_names,
-    )
-    design_rows.extend(
-        _interaction_diagnostic_rows(
-            subject=subject_id,
-            model="encoding",
-            fold_id=None,
-            trial_encoding=trial_encoding,
-            trial_indices=np.arange(len(trial_encoding)),
-            interactions=parsed_formula["interactions"],
-            min_trials_per_cell=20,
-        )
-    )
+    design_rows = []
+    first_trial_encoding = None
+    first_effect_names = None
 
     for fold_ix, (train_idx, test_idx) in enumerate(
         cv.split(np.zeros(len(condition_values)), condition_values),
@@ -441,6 +535,54 @@ def _fit_one_encoding_subject(
         if len(test_idx) == 0:
             raise ValueError("Each cross-validation fold must include held-out trials.")
         train_model_idx = train_idx[train_condition_mask[train_idx]]
+        design_matrix, design_names, trial_encoding, parsed_formula, validation = (
+            _build_subject_design(
+                metadata=metadata,
+                formula=formula,
+                design_cfg=design_cfg,
+                fit_indices=train_model_idx,
+            )
+        )
+        term_types = list(parsed_formula["term_types"])
+        effect_names = [
+            name
+            for name, term_type in zip(design_names, term_types)
+            if term_type == "fixed"
+        ]
+        effect_indices = [design_names.index(name) for name in effect_names]
+        if len(effect_names) == 0:
+            raise ValueError("formula must include at least one fixed effect.")
+        if raw_beta_patterns is None:
+            raw_beta_patterns = np.empty(
+                (cv_n_splits, len(design_names), data.shape[1], data.shape[2]),
+                dtype=float,
+            )
+            payload_predictor_names = list(design_names)
+            payload_term_types = list(term_types)
+            first_trial_encoding = trial_encoding
+            first_effect_names = effect_names
+            design_rows.extend(
+                _design_diagnostic_rows(
+                    subject=subject_id,
+                    model="encoding",
+                    validation=validation,
+                    design_matrix=design_matrix,
+                    design_names=design_names,
+                )
+            )
+            design_rows.extend(
+                _interaction_diagnostic_rows(
+                    subject=subject_id,
+                    model="encoding",
+                    fold_id=None,
+                    trial_encoding=trial_encoding,
+                    trial_indices=np.arange(len(trial_encoding)),
+                    interactions=parsed_formula["interactions"],
+                    min_trials_per_cell=20,
+                )
+            )
+        elif list(design_names) != payload_predictor_names:
+            raise ValueError("Formula design columns changed across folds.")
         if len(train_model_idx) <= len(design_names):
             raise ValueError(
                 "Too few training trials for the fitted encoding model. "
@@ -456,12 +598,11 @@ def _fit_one_encoding_subject(
             )
 
         train_design = design_matrix[train_model_idx, :]
-        fit_result = fit_time_resolved_multivariate_ols(
+        betas, design_aug = _fit_time_resolved_multivariate_ridge(
             data=train_data,
             design_matrix=train_design,
-            design_names=design_names,
+            penalty_sqrt=_penalty_vector(term_types, ridge_penalty),
         )
-        betas = fit_result["betas"].astype(float)
         raw_beta_patterns[fold_ix, :, :, :] = betas
         precision_matrices, _covariances, _logdets, fold_cov_rows = _covariance_rows(
             subject=subject_id,
@@ -518,6 +659,20 @@ def _fit_one_encoding_subject(
                 min_trials_per_cell=5,
             )
         )
+        for time_ix, time_s in enumerate(times_s):
+            design_rows.append(
+                {
+                    "subject": str(subject_id),
+                    "model": "encoding",
+                    "fold": int(fold_id),
+                    "diagnostic": "ridge_design",
+                    "effect": "",
+                    "value": float(np.linalg.cond(design_aug)),
+                    "threshold": 1e8,
+                    "status": "warning" if np.linalg.cond(design_aug) > 1e8 else "ok",
+                    "message": f"time_ms={float(time_s * 1000.0)}; fixed={ridge_penalty['fixed']}; random={ridge_penalty['random']}",
+                }
+            )
         progress_bar.update(1)
 
     pattern_expression_trial_df = pd.concat(trial_expression_tables, ignore_index=True)
@@ -527,12 +682,14 @@ def _fit_one_encoding_subject(
     effect_slope_df = build_effect_slope_table(
         subject=subject_id,
         trial_expression_df=pattern_expression_trial_df,
-        trial_design=trial_encoding,
-        effect_names=effect_names,
+        trial_design=first_trial_encoding,
+        effect_names=first_effect_names,
         times_s=times_s,
         covariance_method=covariance,
     )
 
+    if raw_beta_patterns is None:
+        raise RuntimeError("No cross-validation folds were fit.")
     payload = {
         "subject": np.asarray(subject_id, dtype=object),
         "times_s": np.asarray(times_s, dtype=float),
@@ -545,7 +702,8 @@ def _fit_one_encoding_subject(
         "condition_levels": np.asarray(sorted(np.unique(condition_values).tolist()), dtype=object),
         "standardize_data": np.asarray(bool(standardize_data), dtype=bool),
         "covariance_method": np.asarray(str(covariance), dtype=object),
-        "predictor_names": np.asarray(design_names, dtype=object),
+        "predictor_names": np.asarray(payload_predictor_names, dtype=object),
+        "term_types": np.asarray(payload_term_types, dtype=object),
         "raw_beta_patterns": raw_beta_patterns,
     }
     if subject_results_dir is not None:
@@ -565,14 +723,15 @@ def _fit_one_encoding_subject(
     }
 
 
-def run_encoding_workflow(
+def run_regression_model_workflow(
     *,
     subject_ids: list[str],
     subject_results_dir: str | Path | None = None,
     loader_cfg,
-    condition_encoding: pd.DataFrame,
     design_cfg: EncodingConfig,
-    glm_formula: str,
+    formula: str,
+    metadata_assign=None,
+    penalty: dict[str, float] | None = None,
     source_to_condition: dict[str, str] | None = None,
     train_condition_labels: list[str] | tuple[str, ...] | None = None,
     overwrite: bool = False,
@@ -598,12 +757,15 @@ def run_encoding_workflow(
         Optional folder for subject-level beta-pattern payloads.
     loader_cfg : object
         Subject-loading config.
-    condition_encoding : pd.DataFrame
-        Condition-level design table.
     design_cfg : EncodingConfig
         Design validation settings.
-    glm_formula : str
-        Formula selecting condition-level predictors and simple interactions.
+    formula : str
+        Formula selecting metadata predictors and random intercept terms.
+    metadata_assign : callable | None
+        Optional callable that returns assigned trial metadata before formula
+        design construction.
+    penalty : dict | None
+        Ridge penalties for fixed and random terms.
     source_to_condition : dict[str, str] | None
         Mapping from raw metadata labels to analysis condition labels.
     train_condition_labels : list[str] | tuple[str, ...] | None
@@ -670,9 +832,10 @@ def run_encoding_workflow(
             source_condition_col=source_condition_col,
             source_to_condition=source_to_condition,
             train_condition_labels=train_condition_labels,
-            condition_encoding=condition_encoding,
             design_cfg=design_cfg,
-            glm_formula=glm_formula,
+            formula=formula,
+            metadata_assign=metadata_assign,
+            penalty=penalty,
             covariance=covariance,
             cv_n_splits=cv_n_splits,
             cv_shuffle=cv_shuffle,
@@ -837,7 +1000,7 @@ def _fit_model_comparison_subject(
     design_rows = []
     for model_name, formula in model_specs.items():
         design_matrix, design_names, trial_encoding, parsed_formula, validation = (
-            _build_subject_design(
+            _build_condition_subject_design(
                 condition_values=condition_values,
                 condition_encoding=condition_encoding,
                 glm_formula=formula,
@@ -1198,5 +1361,4 @@ def compare_encoding_models_workflow(
     }
 
 
-run_encoding = run_encoding_workflow
 compare_encoding_models = compare_encoding_models_workflow

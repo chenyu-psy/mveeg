@@ -9,11 +9,17 @@ from mveeg.encoding.workflow import (
     compare_encoding_models,
     export_encoding_outputs,
     prepare_encoding_paths,
-    run_encoding,
+    run_regression_model,
     run_encoding_design_check,
     run_pattern_expression,
     run_pattern_expression_workflow,
     validate_glm_formula,
+)
+from mveeg.encoding.metadata import assign_metadata
+from mveeg.encoding.workflow_design import build_formula_metadata_design
+from mveeg.encoding.workflow_model import (
+    _fit_time_resolved_multivariate_ridge,
+    _penalty_vector,
 )
 from mveeg.encoding.metrics import estimate_channel_covariance
 from mveeg.encoding.workflow_outputs import (
@@ -68,7 +74,7 @@ def test_encoding_workflow_facade_keeps_public_imports():
     assert callable(compare_encoding_models)
     assert callable(run_encoding_design_check)
     assert callable(validate_glm_formula)
-    assert callable(run_encoding)
+    assert callable(run_regression_model)
 
 
 def test_prepare_encoding_paths_uses_general_defaults(tmp_path):
@@ -85,22 +91,17 @@ def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
 
     captured = {}
 
-    def fake_run_encoding_workflow(**kwargs):
+    def fake_run_regression_model_workflow(**kwargs):
         captured.update(kwargs)
         return {
             "subject_summary_df": pd.DataFrame({"subject": ["001", "002"]}),
             "skipped_subjects_df": pd.DataFrame(columns=["subject", "reason"]),
         }
 
-    monkeypatch.setattr(workflow, "run_encoding_workflow", fake_run_encoding_workflow)
-    condition_encoding = pd.DataFrame(
-        {
-            "condition": ["same", "new"],
-            "item": [1.0, 0.0],
-        }
-    )
+    monkeypatch.setattr(workflow, "run_regression_model_workflow", fake_run_regression_model_workflow)
+    metadata_assign = assign_metadata(item=lambda df: df["model_condition"].eq("same").astype(float))
 
-    result = workflow.run_encoding(
+    result = workflow.run_regression_model(
         data_dir=tmp_path / "data" / "preprocessed" / "exp1",
         subject_ids=["001", "002"],
         trial_filters={
@@ -118,9 +119,10 @@ def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
             "random_state": 1,
             "covariance": "identity",
         },
-        condition_encoding=condition_encoding,
         condition_label_map={"same": ["correct"], "new": ["new"]},
-        glm_formula="~ 1 + item",
+        formula="pattern ~ 1 + item",
+        metadata_assign=metadata_assign,
+        penalty={"fixed": 1.0, "random": 0.1},
         overwrite=False,
         name="probe_encoding",
         topography={"time_window_ms": (1900, 2800)},
@@ -133,6 +135,9 @@ def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
     assert captured["cv_shuffle"] is False
     assert captured["covariance"] == "identity"
     assert captured["topography"] == {"time_window_ms": (1900, 2800)}
+    assert captured["metadata_assign"] is metadata_assign
+    assert captured["formula"] == "pattern ~ 1 + item"
+    assert captured["penalty"] == {"fixed": 1.0, "random": 0.1}
     assert captured["subject_results_dir"] is None
     assert captured["results_dir"] is None
     assert captured["config_payload"] is None
@@ -150,16 +155,16 @@ def test_run_encoding_appends_new_subjects_to_result_store(tmp_path, monkeypatch
     info = mne.create_info(["Cz"], sfreq=250, ch_types="eeg")
     info.set_montage("standard_1020")
 
-    def fake_run_encoding_workflow(**kwargs):
+    def fake_run_regression_model_workflow(**kwargs):
         subject_ids = [str(subject_id) for subject_id in kwargs["subject_ids"]]
         processed.extend(subject_ids)
         return _make_encoding_store_output(subject_ids)
 
-    monkeypatch.setattr(workflow, "run_encoding_workflow", fake_run_encoding_workflow)
+    monkeypatch.setattr(workflow, "run_regression_model_workflow", fake_run_regression_model_workflow)
     monkeypatch.setattr(workflow, "load_subject_info", lambda _subject, _cfg: info)
 
     file = tmp_path / "encoding"
-    workflow.run_encoding(
+    workflow.run_regression_model(
         **_encoding_kwargs(
             tmp_path,
             subject_ids=["001", "002"],
@@ -168,7 +173,7 @@ def test_run_encoding_appends_new_subjects_to_result_store(tmp_path, monkeypatch
             topography={"time_window_ms": (0, 50)},
         )
     )
-    tables = workflow.run_encoding(
+    tables = workflow.run_regression_model(
         **_encoding_kwargs(
             tmp_path,
             subject_ids=["003"],
@@ -182,7 +187,7 @@ def test_run_encoding_appends_new_subjects_to_result_store(tmp_path, monkeypatch
     assert tables["subject_summary"]["subject"].tolist() == ["001", "002", "003"]
     assert tables["topography_values"]["n_subjects"].tolist() == [3, 3]
 
-    tables = workflow.run_encoding(
+    tables = workflow.run_regression_model(
         **_encoding_kwargs(
             tmp_path,
             subject_ids=["002"],
@@ -453,6 +458,7 @@ def test_validate_glm_formula_parses_additive_terms():
         "add_intercept": False,
         "predictors": ["load", "cue"],
         "interactions": [],
+        "random_terms": [],
     }
 
 
@@ -464,6 +470,7 @@ def test_validate_glm_formula_expands_interactions():
         "add_intercept": True,
         "predictors": ["load", "cue", "load:cue"],
         "interactions": ["load:cue"],
+        "random_terms": [],
     }
 
 
@@ -493,8 +500,109 @@ def test_sample_covariance_errors_when_rank_deficient():
         estimate_channel_covariance(residuals, method="sample")
 
 
+def test_assign_metadata_applies_columns_in_order():
+    """Metadata assignment should allow later columns to use earlier columns."""
+
+    metadata = pd.DataFrame({"label": ["SS2/A", "SS4/B"]})
+    assign = assign_metadata(
+        setsize=lambda df: df["label"].str.split("/").str[0],
+        load=lambda df: df["setsize"].eq("SS4").astype(float),
+    )
+
+    output = assign(metadata)
+
+    assert output["setsize"].tolist() == ["SS2", "SS4"]
+    assert output["load"].tolist() == [0.0, 1.0]
+    assert "setsize" not in metadata.columns
+
+
+def test_formula_metadata_design_expands_random_intercept_from_training_levels():
+    """Formula design should use metadata columns and train-observed random levels."""
+
+    metadata = pd.DataFrame(
+        {
+            "condition": ["A", "B", "A+B", "A"],
+            "a": [1.0, 0.0, 1.0, 1.0],
+            "b": [0.0, 1.0, 1.0, 0.0],
+        }
+    )
+
+    design, names, trial_design, parsed = build_formula_metadata_design(
+        metadata,
+        "pattern ~ a + b + (1 | condition)",
+        fit_indices=[0, 1],
+    )
+
+    assert names == ["intercept", "a", "b", "random_condition_A", "random_condition_B"]
+    assert parsed["term_types"] == ["intercept", "fixed", "fixed", "random", "random"]
+    assert design[:, 3].tolist() == [1.0, 0.0, 0.0, 1.0]
+    assert design[:, 4].tolist() == [0.0, 1.0, 0.0, 0.0]
+    assert trial_design["a"].tolist() == [1.0, 0.0, 1.0, 1.0]
+
+
+def test_formula_random_intercept_columns_ignore_training_row_order():
+    """Random intercept column order should be stable across CV folds."""
+
+    metadata = pd.DataFrame(
+        {
+            "condition": ["B", "A", "C", "A", "B", "C"],
+            "color": [0.0, 1.0, 0.0, 1.0, 0.0, 0.0],
+        }
+    )
+
+    _, names_a, _, parsed_a = build_formula_metadata_design(
+        metadata,
+        "pattern ~ color + (1 | condition)",
+        fit_indices=[0, 1, 2],
+    )
+    _, names_b, _, parsed_b = build_formula_metadata_design(
+        metadata,
+        "pattern ~ color + (1 | condition)",
+        fit_indices=[3, 4, 5],
+    )
+
+    assert names_a == names_b
+    assert parsed_a["random_terms"] == parsed_b["random_terms"]
+
+
+def test_ridge_penalty_vector_leaves_intercept_unpenalized():
+    """Fixed and random penalties should not penalize the intercept."""
+
+    penalty = _penalty_vector(
+        ["intercept", "fixed", "random"],
+        {"fixed": 4.0, "random": 0.25},
+    )
+
+    assert penalty.tolist() == [0.0, 2.0, 0.5]
+
+
+def test_ridge_fits_rank_deficient_random_design():
+    """Ridge augmented least squares should fit random-effect-like columns."""
+
+    design = np.asarray(
+        [
+            [1.0, 1.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    data = np.ones((4, 2, 1), dtype=float)
+
+    betas, design_aug = _fit_time_resolved_multivariate_ridge(
+        data=data,
+        design_matrix=design,
+        penalty_sqrt=np.asarray([0.0, 1.0, 0.1, 0.1]),
+    )
+
+    assert np.linalg.matrix_rank(design) < design.shape[1]
+    assert np.linalg.matrix_rank(design_aug) == design.shape[1]
+    assert betas.shape == (4, 2, 1)
+    assert np.isfinite(betas).all()
+
+
 def _encoding_kwargs(tmp_path, **overrides):
-    """Return minimal public run_encoding kwargs for facade/store tests."""
+    """Return minimal public run_regression_model kwargs for facade/store tests."""
 
     kwargs = {
         "data_dir": tmp_path / "missing-data",
@@ -511,14 +619,9 @@ def _encoding_kwargs(tmp_path, **overrides):
             "drop_channels": [],
             "covariance": "identity",
         },
-        "condition_encoding": pd.DataFrame(
-            {
-                "condition": ["a", "b"],
-                "x": [0.0, 1.0],
-            }
-        ),
         "condition_label_map": {"a": ["a"], "b": ["b"]},
-        "glm_formula": "~ 1 + x",
+        "metadata_assign": assign_metadata(x=lambda df: df["model_condition"].eq("b").astype(float)),
+        "formula": "pattern ~ 1 + x",
         "overwrite": False,
         "name": "encoding",
     }
@@ -527,7 +630,7 @@ def _encoding_kwargs(tmp_path, **overrides):
 
 
 def _make_encoding_store_output(subject_ids):
-    """Build minimal run_encoding_workflow output for cumulative-store tests."""
+    """Build minimal run_regression_model_workflow output for cumulative-store tests."""
 
     subject_ids = [str(subject_id) for subject_id in subject_ids]
     n_subjects = len(subject_ids)
@@ -651,3 +754,13 @@ def _make_topography_payload(raw_offset: float) -> dict[str, np.ndarray]:
         "predictor_names": np.asarray(["intercept", "item"], dtype=object),
         "raw_beta_patterns": base + float(raw_offset),
     }
+
+
+class _ProgressStub:
+    """Minimal progress-bar stub for direct subject-workflow tests."""
+
+    def set_postfix_str(self, _text):
+        """Accept progress text without doing any UI work."""
+
+    def update(self, _amount):
+        """Accept progress updates without doing any UI work."""
