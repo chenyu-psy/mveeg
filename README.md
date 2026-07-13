@@ -12,7 +12,7 @@ workflows in psychology and cognitive neuroscience.
 
 | Sub-package | Purpose |
 |---|---|
-| `mveeg.encoding` | Temporal response functions and linear encoding models |
+| `mveeg.encoding` | Trial-metadata regression models, pattern expression, and model comparison |
 | `mveeg.decoding` | LDA, logistic regression, and cross-validated classification |
 | `mveeg.prep` | EEG helpers that produce model-ready arrays |
 | `mveeg.io` | Loading and saving model inputs / outputs |
@@ -54,6 +54,47 @@ print(mveeg.__version__)
 from mveeg.validation import check_trial_count
 check_trial_count(n_trials=80)   # passes silently; raises ValueError if too few
 ```
+
+## Encoding regression models
+
+`mveeg.encoding.workflow.run_regression_model` fits cross-validated EEG
+regression models from trial metadata. Use `assign_metadata` to add reusable
+numeric predictors before the formula is evaluated.
+
+```python
+from mveeg.encoding.metadata import assign_metadata
+from mveeg.encoding.workflow import run_regression_model
+
+metadata_assign = assign_metadata(
+    load=lambda df: df["model_condition"].eq("high_load").astype(float),
+)
+
+tables = run_regression_model(
+    data_dir="data/preprocessed/exp1",
+    subject_ids=["001", "002"],
+    trial_filters={
+        "qc_col": "qc_pass",
+        "keep_qc": [True],
+        "exclude_metadata": {},
+    },
+    encoding_params={
+        "crop_time": (-0.2, 1.0),
+        "drop_channel_types": [],
+        "drop_channels": [],
+        "time_window_ms": 50,
+    },
+    condition_label_map={"high_load": ["SS4"], "low_load": ["SS2"]},
+    metadata_assign=metadata_assign,
+    formula="pattern ~ 1 + load + (1 | model_condition)",
+    penalty={"fixed": 1.0, "random": 0.1},
+    overwrite=False,
+    name="load_model",
+)
+```
+
+Formulas select numeric trial-level metadata columns. Additive terms,
+interactions such as `load * cue`, and random intercepts such as
+`(1 | model_condition)` are supported.
 
 ---
 

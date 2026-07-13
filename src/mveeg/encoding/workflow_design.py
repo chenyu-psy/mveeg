@@ -86,6 +86,77 @@ def _add_interaction_column(
     return pd.Series(values, index=condition_encoding.index, name=term)
 
 
+def build_formula_metadata_design(
+    metadata: pd.DataFrame,
+    formula: str,
+    *,
+    fit_indices: np.ndarray | list[int] | None = None,
+) -> tuple[np.ndarray, list[str], pd.DataFrame, dict[str, object]]:
+    """Build a formula-selected trial-level design from metadata."""
+
+    if len(metadata) == 0:
+        raise ValueError("metadata must include at least one trial row.")
+    fit_indices = (
+        np.arange(len(metadata), dtype=int)
+        if fit_indices is None
+        else np.asarray(fit_indices, dtype=int)
+    )
+    if len(fit_indices) == 0:
+        raise ValueError("fit_indices must include at least one row.")
+
+    parsed = validate_glm_formula(
+        formula,
+        allowed_predictors=set(metadata.columns),
+    )
+    columns = []
+    names = []
+    term_types = []
+    trial_design = metadata.copy()
+    if parsed["add_intercept"]:
+        columns.append(np.ones(len(metadata), dtype=float))
+        names.append("intercept")
+        term_types.append("intercept")
+
+    for predictor in parsed["predictors"]:
+        if ":" in predictor:
+            values = _metadata_interaction_column(metadata, predictor)
+            trial_design[predictor] = values
+        else:
+            if predictor not in metadata.columns:
+                raise ValueError(f"metadata is missing formula column '{predictor}'.")
+            values = metadata[predictor].to_numpy(dtype=float)
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"fixed term '{predictor}' contains non-finite values.")
+        columns.append(values.astype(float))
+        names.append(predictor)
+        term_types.append("fixed")
+
+    random_terms = []
+    for random in parsed["random_terms"]:
+        variable = random["variable"]
+        if variable not in metadata.columns:
+            raise ValueError(f"metadata is missing random term column '{variable}'.")
+        values = metadata[variable].astype(str).to_numpy()
+        train_levels = sorted(_ordered_unique(values[fit_indices]))
+        random_names = []
+        for level in train_levels:
+            safe_level = _safe_level_name(level)
+            name = f"random_{variable}_{safe_level}"
+            columns.append((values == level).astype(float))
+            names.append(name)
+            term_types.append("random")
+            random_names.append(name)
+        random_terms.append({"variable": variable, "levels": train_levels, "columns": random_names})
+
+    design = np.column_stack(columns).astype(float) if columns else np.empty((len(metadata), 0), dtype=float)
+    parsed = {
+        **parsed,
+        "term_types": term_types,
+        "random_terms": random_terms,
+    }
+    return design, names, trial_design, parsed
+
+
 def build_formula_condition_encoding(
     condition_encoding: pd.DataFrame,
     glm_formula: str,
@@ -137,23 +208,25 @@ def validate_glm_formula(
     """Validate and parse a small R-style GLM formula."""
 
     formula_text = str(glm_formula).strip()
-    if not formula_text.startswith("~"):
-        raise ValueError(
-            f"glm_formula must start with '~'. Got: '{glm_formula}'"
-        )
+    if "~" in formula_text:
+        lhs, rhs = formula_text.split("~", maxsplit=1)
+        _ = lhs.strip()
+    else:
+        rhs = formula_text
 
-    rhs = formula_text[1:].strip()
+    rhs = rhs.strip()
     if rhs == "":
-        raise ValueError("glm_formula must include right-hand-side terms.")
+        raise ValueError("formula must include right-hand-side terms.")
 
-    raw_terms = [term.strip() for term in rhs.split("+")]
+    raw_terms = _split_formula_terms(rhs)
     raw_terms = [term for term in raw_terms if term != ""]
     if len(raw_terms) == 0:
-        raise ValueError("glm_formula has no valid terms after parsing.")
+        raise ValueError("formula has no valid terms after parsing.")
 
     add_intercept = True
     predictors: list[str] = []
     interactions: list[str] = []
+    random_terms: list[dict[str, str]] = []
 
     def add_predictor(name: str) -> None:
         """Add one predictor name while preserving first-seen order."""
@@ -185,9 +258,14 @@ def validate_glm_formula(
         if term in {"0", "-1"}:
             add_intercept = False
             continue
-        if any(token in term for token in ["^", "(", ")"]):
+        random_term = _parse_random_intercept(term)
+        if random_term is not None:
+            random_terms.append(random_term)
+            continue
+        if any(token in term for token in ["^", "(", ")", "|"]):
             raise ValueError(
-                "glm_formula supports additive terms and simple interactions "
+                "formula supports additive terms, simple interactions, and "
+                "random intercept terms "
                 "(e.g., '~ 1 + feature_a * feature_b'). "
                 f"Unsupported term: '{term}'. "
             )
@@ -201,7 +279,7 @@ def validate_glm_formula(
             unknown = [factor for factor in factors if factor not in allowed_predictors]
             if len(unknown) > 0:
                 raise ValueError(
-                    f"Unknown predictor(s) {unknown} in glm_formula '{glm_formula}'. "
+                    f"Unknown predictor(s) {unknown} in formula '{glm_formula}'. "
                     f"Allowed predictors: {sorted(allowed_predictors)}"
                 )
             for factor in factors:
@@ -213,19 +291,67 @@ def validate_glm_formula(
             continue
         if term not in allowed_predictors:
             raise ValueError(
-                f"Unknown predictor '{term}' in glm_formula '{glm_formula}'. "
+                f"Unknown predictor '{term}' in formula '{glm_formula}'. "
                 f"Allowed predictors: {sorted(allowed_predictors)}"
             )
         add_predictor(term)
 
-    if len(predictors) == 0:
+    if len(predictors) == 0 and len(random_terms) == 0:
         raise ValueError(
-            "glm_formula must include at least one predictor besides intercept."
+            "formula must include at least one term besides intercept."
         )
 
     return {
         "add_intercept": add_intercept,
         "predictors": predictors,
         "interactions": interactions,
+        "random_terms": random_terms,
     }
 
+
+def _split_formula_terms(rhs: str) -> list[str]:
+    terms = []
+    depth = 0
+    start = 0
+    for ix, char in enumerate(rhs):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError(f"Unbalanced formula parentheses in '{rhs}'.")
+        elif char == "+" and depth == 0:
+            terms.append(rhs[start:ix].strip())
+            start = ix + 1
+    if depth != 0:
+        raise ValueError(f"Unbalanced formula parentheses in '{rhs}'.")
+    terms.append(rhs[start:].strip())
+    return terms
+
+
+def _parse_random_intercept(term: str) -> dict[str, str] | None:
+    text = term.strip()
+    if not (text.startswith("(") and text.endswith(")") and "|" in text):
+        return None
+    left, right = [part.strip() for part in text[1:-1].split("|", maxsplit=1)]
+    if left != "1" or right == "":
+        raise ValueError("Only random intercept terms like '(1 | column)' are supported.")
+    return {"variable": right}
+
+
+def _metadata_interaction_column(metadata: pd.DataFrame, term: str) -> np.ndarray:
+    factors = [factor.strip() for factor in term.split(":")]
+    values = np.ones(len(metadata), dtype=float)
+    for factor in factors:
+        if factor not in metadata.columns:
+            raise ValueError(f"metadata is missing interaction factor '{factor}'.")
+        values = values * metadata[factor].to_numpy(dtype=float)
+    return values
+
+
+def _ordered_unique(values: np.ndarray) -> list[str]:
+    return list(dict.fromkeys(np.asarray(values, dtype=object).astype(str).tolist()))
+
+
+def _safe_level_name(value: str) -> str:
+    return "".join(char if char.isalnum() else "_" for char in str(value)).strip("_") or "level"
