@@ -1,80 +1,252 @@
 # mveeg
 
-**Multivariate encoding and decoding models for EEG research.**
+`mveeg` provides manifest-backed EEG preprocessing plus multivariate encoding
+and decoding workflows. Version 0.3 uses one trial identity everywhere:
+`subject_index + epoch_index`.
 
-`mveeg` is a reusable Python package for building and evaluating
-multivariate encoding and decoding models, with a focus on EEG analysis
-workflows in psychology and cognitive neuroscience.
-
----
-
-## What it includes
-
-| Sub-package | Purpose |
-|---|---|
-| `mveeg.encoding` | Trial-metadata regression models, pattern expression, and model comparison |
-| `mveeg.decoding` | LDA, logistic regression, and cross-validated classification |
-| `mveeg.prep` | EEG helpers that produce model-ready arrays |
-| `mveeg.io` | Loading and saving model inputs / outputs |
-| `mveeg.summaries` | Group-level summaries and reporting helpers |
-| `mveeg.validation` | Input validation (trial counts, array shapes, …) |
-
-## What it intentionally does *not* include
-
-- RSA / representational similarity analysis
-- Project-specific constants, condition maps, or file paths
-- Notebook logic or one-off dataset conversion scripts
-
----
-
-## Installation (editable mode)
+## Installation
 
 ```bash
-# from the repository root
 uv pip install -e .
 ```
 
-Or add it as an editable path dependency from another project's
-`pyproject.toml`:
+## Raw-data quickstart
 
-```toml
-[tool.uv.sources]
-mveeg = { path = "../mveeg", editable = true }
-```
-
----
-
-## Quick start
+The raw pipeline is dataset-level and lazy. Calls register steps; data are read
+only by `build_epochs()`.
 
 ```python
-import mveeg
-print(mveeg.__version__)
+from mveeg import prep
 
-# Validate trial count before fitting
-from mveeg.validation import check_trial_count
-check_trial_count(n_trials=80)   # passes silently; raises ValueError if too few
+pipeline = prep.init_pipeline("data/raw")
+pipeline.load_eeg("*.vhdr")
+pipeline.load_eyelink("*.asc")
+pipeline.configure_gaze(
+    viewing_distance_cm=80,
+    screen_width_cm=53.2,
+    screen_width_px=1920,
+)
+pipeline.load_behavior(
+    "*_beh.csv",
+    include={"trial_type": ["exp", "pra"], "rejection": "no"},
+)
+pipeline.filter_eeg(l_freq=None, h_freq=80)
+pipeline.make_epochs(
+    event_id={"stimulus": 1},
+    time_window=(-0.2, 1.0),
+    baseline=(-0.2, 0),
+)
+pipeline.sync_eyelink()
+pipeline.align_behavior()  # strict row-count and order contract
+pipeline.select_epochs(include={"trial_type": "exp"})
+
+prepared = pipeline.build_epochs(
+    "data/prepared",
+    task="memory",
+    exclude_subjects=None,
+    recompute="never",
+)
 ```
 
-## Encoding regression models
+This is the simple event mode: each matching `event_id` entry defines an
+epoch. Pass `trial_sequences` when an epoch is valid only if an expected
+ordered event sequence is present. Each mapping key is its time-zero event by
+default; use `time_zero=event_code` or a per-trial mapping only when another
+event defines zero. The sequence validates the trial and supplies relative
+event timing metadata. `sync_eyelink()` reuses the registered epoch definition.
 
-`mveeg.encoding.workflow.run_regression_model` fits cross-validated EEG
-regression models from trial metadata. Use `assign_metadata` to add reusable
-numeric predictors before the formula is evaluated.
+See [the raw-data recipe](docs/preprocessing-raw.md).
+
+## External-data quickstart
+
+The external pipeline is subject-level and eager. Project code reads any
+external format into memory; `mveeg` converts it to MNE epochs, attaches
+metadata, and writes the same prepared-dataset contract as the raw pipeline.
 
 ```python
-from mveeg.encoding.metadata import assign_metadata
-from mveeg.encoding.workflow import run_regression_model
+from mveeg import prep
 
-metadata_assign = assign_metadata(
-    load=lambda df: df["model_condition"].eq("high_load").astype(float),
+external = prep.init_external(subject_index="4001", data=data_in_memory)
+external.make_epochs(
+    sampling_rate=500,
+    ch_names=channel_names,
+    tmin=-0.2,
+    events=event_codes,
+)
+external.merge_metadata(metadata)  # strict row mode
+external.select_epochs(include={"trial_type": "exp"})
+prepared = external.build_epochs("data/prepared", task="memory")
+```
+
+If `data_in_memory` is already an `mne.Epochs` object, `make_epochs()` can be
+skipped. See [the external-data recipe](docs/preprocessing-external.md).
+
+If external epochs contain pixel-space eye-gaze channels, register their
+display geometry before `build_epochs()`:
+
+```python
+external.configure_gaze(
+    viewing_distance_cm=80,
+    screen_width_cm=53.2,
+    screen_width_px=1920,
+)
+```
+
+The external gaze coordinates must already use that screen's pixel coordinate
+system. `mveeg` stores the geometry; it does not infer or convert an external
+source format.
+
+## Signal preprocessing and artifact review
+
+```python
+from mveeg import prep
+
+prepared = prep.open_pipeline("data/prepared")
+preprocessed = prep.preprocess_epochs(
+    prepared,
+    "data/preprocessed",
+    eligibility={
+        "time_window": (-0.2, 1.0),
+        "gaze": {
+            "deviation_deg": 1.25,
+            "shift_deg": 0.75,
+            "max_missing_fraction": 0.10,
+        },
+        "eeg": eligibility_eeg_config,
+    },
+    autoreject=autoreject_config,  # use None to skip AutoReject
+    recompute="never",
 )
 
+reject_config = {
+    "time_window": (-0.2, 1.0),
+    "hf_noise": {
+        "band": (25, 45),
+        "window_duration": 0.25,
+        "z_threshold": 6,
+        "min_noisy_fraction": 0.20,
+        "bad_channels": 5,
+    },
+}
+review_config = {
+    "time_window": (-0.2, 1.0),
+    "eeg": {
+        "p2p": 120e-6,
+        "step": 60e-6,
+        "absolute_value": 120e-6,
+        "bad_channels": 2,
+    },
+    "hf_noise": {
+        "band": (25, 45),
+        "window_duration": 0.25,
+        "z_threshold": 4,
+        "min_noisy_fraction": 0.20,
+        "bad_channels": 4,
+    },
+}
+preprocessed.label_artifacts(
+    reject=reject_config,
+    review=review_config,
+    ignore_channels=["Fp1", "Fp2"],
+)
+preprocessed.review_artifacts(
+    subject_index="4001",
+    group_by="initial_status",
+    label="review",
+)
+```
+
+Artifact labeling prints one row per subject with automatic `accepted`,
+`rejected`, and `review` counts. The manual-review window uses a compact layout,
+and the first and last displayed epochs meet the plotting bounds without added
+horizontal padding.
+
+Set `autoreject.exclude_channels` to a list of EEG channel names that should
+remain in the saved epochs but not participate in AutoReject threshold fitting,
+cross-validation, voting, or interpolation. Their AutoReject labels are stored
+as `-1`; channels already listed in `epochs.info["bads"]` follow the same model
+exclusion behavior.
+
+Before the window opens, manual review prints the complete count table for
+the requested `group_by` field (or `all: N` when no group is selected). The
+browser uses black traces, an orange background for rejected trials, and red
+overlays for their flagged channels. `Show flags on accepted` extends only the
+red channel overlays to non-rejected trials. Channel names remain plain on the
+y-axis; `r` toggles all visible epoch and channel reason codes.
+
+`DatasetPipeline.review_artifacts()` is blocking and returns `None` after the
+window closes. Closing also disconnects callbacks and releases the preloaded
+epochs and GUI references, so notebook output history cannot retain the full
+review dataset through this call.
+
+Clicking a trial switches it directly between `accepted` and `rejected`.
+Unreviewed trials whose automatic `final_status` is `review` are staged as
+`rejected` when first displayed. The upper-right `Progress current / total`
+counts saved reviews together with trials displayed in the current session.
+Arrow keys navigate and `w` saves the accumulated edits while marking only
+visited trials reviewed. Closing without `w` writes nothing.
+
+Prepared and preprocessed data use separate dataset roots. Later scripts open
+the intended root explicitly; there is no implicit active or latest dataset.
+Gaze deviation and shift thresholds are specified in visual degrees. The
+optional `max_missing_fraction` marks a sample missing only when neither eye
+has finite `xpos` and `ypos`; it uses the rule's `time_window` and does not
+require display geometry. Users provide geometry once with `configure_gaze()`
+when a degree-based rule is configured.
+
+`hf_noise` is a residual high-frequency outlier label applied downstream of
+the optional AutoReject stage. It band-filters the signal, measures log
+mean-square power in complete overlapping windows, and compares each window
+with a robust reference for that subject and channel. The reference excludes
+ineligible epochs and AutoReject-bad epochs; when AutoReject is enabled, it
+uses only channel/epoch cells labeled good (`0`), not bad (`1`) or interpolated
+(`2`) cells. Channels in `epochs.info["bads"]` are not scored. Window overlap is
+fixed at 50%. A channel is
+labeled when the fraction of windows at or above `z_threshold` reaches
+`min_noisy_fraction`; an epoch reaches that rule's status when at least
+`bad_channels` channels are labeled. All five keys shown above are required;
+there is no implicit window or coverage default.
+
+This rule only writes artifact labels and statuses. Its measurement filter is
+not applied to the saved signal; it does not delete epochs or claim that an
+outlier is muscle activity. It also does not detect a subject or channel whose
+high-frequency level remains persistently elevated across most trials, because
+such a level can become the within-subject reference distribution. Diagnose
+persistent channel- or subject-level noise separately.
+
+## Configuration boundaries
+
+- A raw or external pipeline holds dataset-construction choices before
+  `build_epochs()`: source loading, epoch construction, metadata selection, and
+  optional gaze geometry.
+- After build, `preprocess_epochs()` and `label_artifacts()` receive the signal
+  and artifact-rule configuration. If an already-built prepared dataset lacks
+  gaze geometry, `prepared.configure_gaze(...)` writes it atomically to that
+  dataset's provenance.
+- `open_pipeline(root)` reopens one explicit dataset root and restores its
+  stored gaze geometry. It does not restore an active raw pipeline, infer a
+  latest stage, or require geometry to be entered again.
+
+## Metadata in encoding and decoding
+
+Artifact fields are merged by `subject_index + epoch_index`. A modeling-only
+transform runs after that merge and before condition selection or filtering.
+It must preserve trial identity and provide a stable name and version.
+
+```python
+from mveeg.encoding.workflow import run_regression_model
+
+
+def add_load(metadata):
+    return metadata.assign(load=metadata["set_size"].astype(float))
+
+
 tables = run_regression_model(
-    data_dir="data/preprocessed/exp1",
-    subject_ids=["001", "002"],
+    data_dir="data/preprocessed",
+    subject_ids=["4001", "4002"],
     trial_filters={
-        "qc_col": "qc_pass",
-        "keep_qc": [True],
+        "qc_col": "final_status",
+        "keep_qc": ["accepted"],
         "exclude_metadata": {},
     },
     encoding_params={
@@ -83,24 +255,19 @@ tables = run_regression_model(
         "drop_channels": [],
         "time_window_ms": 50,
     },
-    condition_label_map={"high_load": ["SS4"], "low_load": ["SS2"]},
-    metadata_assign=metadata_assign,
-    formula="pattern ~ 1 + load + (1 | model_condition)",
-    penalty={"fixed": 1.0, "random": 0.1},
+    condition_label_map={"high": ["SS4"], "low": ["SS2"]},
+    metadata_transform=add_load,
+    metadata_transform_name="add_load",
+    metadata_transform_version="1",
+    formula="pattern ~ 1 + load",
     overwrite=False,
     name="load_model",
 )
 ```
 
-Formulas select numeric trial-level metadata columns. Additive terms,
-interactions such as `load * cue`, and random intercepts such as
-`(1 | model_condition)` are supported.
-
----
-
 ## Development
 
 ```bash
-uv sync              # create / update the virtual environment
-uv run pytest        # run the test suite
+uv sync
+uv run --with pytest python -m pytest
 ```

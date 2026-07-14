@@ -15,7 +15,7 @@ from mveeg.encoding.workflow import (
     run_pattern_expression_workflow,
     validate_glm_formula,
 )
-from mveeg.encoding.metadata import assign_metadata
+from mveeg._shared.metadata import transform_metadata
 from mveeg.encoding.workflow_design import build_formula_metadata_design
 from mveeg.encoding.workflow_model import (
     _fit_time_resolved_multivariate_ridge,
@@ -99,13 +99,15 @@ def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
         }
 
     monkeypatch.setattr(workflow, "run_regression_model_workflow", fake_run_regression_model_workflow)
-    metadata_assign = assign_metadata(item=lambda df: df["model_condition"].eq("same").astype(float))
+    metadata_transform = lambda df: df.assign(  # noqa: E731
+        item=df["label"].eq("correct").astype(float)
+    )
 
     result = workflow.run_regression_model(
         data_dir=tmp_path / "data" / "preprocessed" / "exp1",
         subject_ids=["001", "002"],
         trial_filters={
-            "qc_col": "final_qc_category",
+            "qc_col": "final_status",
             "keep_qc": ["accepted"],
             "exclude_metadata": None,
         },
@@ -121,7 +123,9 @@ def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
         },
         condition_label_map={"same": ["correct"], "new": ["new"]},
         formula="pattern ~ 1 + item",
-        metadata_assign=metadata_assign,
+        metadata_transform=metadata_transform,
+        metadata_transform_name="derive_item",
+        metadata_transform_version="1",
         penalty={"fixed": 1.0, "random": 0.1},
         overwrite=False,
         name="probe_encoding",
@@ -135,7 +139,7 @@ def test_run_encoding_facade_groups_script_settings(tmp_path, monkeypatch):
     assert captured["cv_shuffle"] is False
     assert captured["covariance"] == "identity"
     assert captured["topography"] == {"time_window_ms": (1900, 2800)}
-    assert captured["metadata_assign"] is metadata_assign
+    assert captured["metadata_transform"] is metadata_transform
     assert captured["formula"] == "pattern ~ 1 + item"
     assert captured["penalty"] == {"fixed": 1.0, "random": 0.1}
     assert captured["subject_results_dir"] is None
@@ -500,16 +504,23 @@ def test_sample_covariance_errors_when_rank_deficient():
         estimate_channel_covariance(residuals, method="sample")
 
 
-def test_assign_metadata_applies_columns_in_order():
-    """Metadata assignment should allow later columns to use earlier columns."""
+def test_transform_metadata_accepts_analysis_columns():
+    """Metadata transforms should add analysis columns without mutating input."""
 
-    metadata = pd.DataFrame({"label": ["SS2/A", "SS4/B"]})
-    assign = assign_metadata(
-        setsize=lambda df: df["label"].str.split("/").str[0],
-        load=lambda df: df["setsize"].eq("SS4").astype(float),
+    metadata = pd.DataFrame(
+        {
+            "subject_index": ["001", "001"],
+            "epoch_index": [0, 1],
+            "label": ["SS2/A", "SS4/B"],
+        }
     )
 
-    output = assign(metadata)
+    def derive_columns(frame):
+        frame["setsize"] = frame["label"].str.split("/").str[0]
+        frame["load"] = frame["setsize"].eq("SS4").astype(float)
+        return frame
+
+    output = transform_metadata(metadata, derive_columns)
 
     assert output["setsize"].tolist() == ["SS2", "SS4"]
     assert output["load"].tolist() == [0.0, 1.0]
@@ -620,7 +631,11 @@ def _encoding_kwargs(tmp_path, **overrides):
             "covariance": "identity",
         },
         "condition_label_map": {"a": ["a"], "b": ["b"]},
-        "metadata_assign": assign_metadata(x=lambda df: df["model_condition"].eq("b").astype(float)),
+        "metadata_transform": lambda df: df.assign(
+            x=df["label"].eq("b").astype(float)
+        ),
+        "metadata_transform_name": "derive_x",
+        "metadata_transform_version": "1",
         "formula": "pattern ~ 1 + x",
         "overwrite": False,
         "name": "encoding",

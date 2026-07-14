@@ -9,9 +9,13 @@ from .config_base import (
 )
 from .io_filters import (
     apply_trial_filters,
+)
+from .metadata import (
+    list_dataset_subjects,
     load_subject_data_with_filters,
     load_subject_info_with_channel_drop,
     load_subject_metadata_table,
+    transform_metadata,
 )
 from .time_windows import average_time_windows, build_time_windows
 from .topography import build_topography_coord_table
@@ -24,9 +28,11 @@ __all__ = [
     "EpochProcessingConfig",
     "SubjectLoadConfig",
     "apply_trial_filters",
+    "list_dataset_subjects",
     "load_subject_data_with_filters",
     "load_subject_info_with_channel_drop",
     "load_subject_metadata_table",
+    "transform_metadata",
     "average_time_windows",
     "build_topography_coord_table",
     "build_time_windows",

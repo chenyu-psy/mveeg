@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .._shared.io_filters import load_subject_info_with_channel_drop
+from .._shared.metadata import load_subject_info_with_channel_drop
 from .summaries import (
     build_condition_average_pattern_expression_table,
     build_trial_pattern_expression_table,

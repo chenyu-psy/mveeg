@@ -15,7 +15,6 @@ from .io import (
     load_saved_generalization_subject_results,
     load_saved_subject_results,
     load_subject_decoding_data,
-    load_subject_metadata,
     save_generalization_subject_results,
     save_subject_results,
     subject_result_exists,
@@ -130,6 +129,7 @@ def run_decoding_workflow(
     cfg: DecodingConfig,
     subject_results_dir: str | Path | None = None,
     overwrite: bool = True,
+    metadata_transform=None,
     log_path: str | Path | None = None,
 ) -> dict[str, object]:
     """Run one decoding analysis across all requested subjects.
@@ -187,6 +187,7 @@ def run_decoding_workflow(
                 window_masks=shared_state["window_masks"],
                 reference_ch_names=shared_state["reference_ch_names"],
                 subject_results_dir=subject_results_dir,
+                metadata_transform=metadata_transform,
                 progress_bar=progress_bar,
             )
         processed_bundles[subject_id] = result_bundle
@@ -237,6 +238,7 @@ def run_generalization_workflow(
     cfg: DecodingConfig,
     subject_results_dir: str | Path | None = None,
     overwrite: bool = True,
+    metadata_transform=None,
     log_path: str | Path | None = None,
 ) -> dict[str, object]:
     """Run one all-window generalization analysis across subjects.
@@ -280,6 +282,7 @@ def run_generalization_workflow(
                 subject_id=subject_id,
                 cfg=cfg,
                 subject_results_dir=subject_results_dir,
+                metadata_transform=metadata_transform,
                 progress_bar=progress_bar,
             )
         processed_bundles[subject_id] = result_bundle
@@ -325,17 +328,18 @@ def _run_single_subject(
     window_masks,
     reference_ch_names,
     subject_results_dir: str | Path | None,
+    metadata_transform,
     progress_bar,
 ) -> dict[str, object]:
     """Run decoding for one subject and return all subject-level outputs."""
 
-    metadata = load_subject_metadata(subject_id, cfg)
     trial_summary_row = {}
 
     data, labels, times_s, ch_names, metadata_filtered = load_subject_decoding_data(
         subject_id,
         cfg,
         return_metadata=True,
+        metadata_transform=metadata_transform,
     )
 
     if reference_ch_names is not None and ch_names != reference_ch_names:
@@ -358,7 +362,7 @@ def _run_single_subject(
         data=data_windowed,
         labels=labels,
         group_labels=cfg.test_group_for_metadata_row(metadata_filtered),
-        trial_ids=metadata_filtered.index.to_numpy(dtype=int),
+        trial_ids=metadata_filtered["epoch_index"].to_numpy(dtype=int),
         group_order=cfg.test_group_order(),
         cfg=cfg,
         progress_bar=progress_bar,
@@ -405,6 +409,7 @@ def _run_single_subject_generalization(
     subject_id: str,
     cfg: DecodingConfig,
     subject_results_dir: str | Path | None,
+    metadata_transform,
     progress_bar,
 ) -> dict[str, object]:
     """Run generalization decoding for one subject.
@@ -431,6 +436,7 @@ def _run_single_subject_generalization(
         subject_id,
         cfg,
         return_metadata=True,
+        metadata_transform=metadata_transform,
     )
 
     window_times_ms, window_masks = build_time_windows(times_s=times_s, window_ms=cfg.decode.time_window_ms)

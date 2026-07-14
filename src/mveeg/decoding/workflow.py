@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .._shared.metadata import metadata_transform_spec
 from ..io.results import (
     init_result_store,
     read_internal_table,
@@ -90,6 +91,9 @@ def run_decoding(
     file: str | Path | None = None,
     experiment_name: str | None = None,
     cond_col: str = "label",
+    metadata_transform=None,
+    metadata_transform_name: str | None = None,
+    metadata_transform_version: str | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Run one decoding analysis from script-level settings.
 
@@ -126,6 +130,12 @@ def run_decoding(
         final folder name from ``data_dir`` is used.
     cond_col : str
         Metadata column used to read condition labels.
+    metadata_transform : callable | None
+        Row-preserving metadata transform applied after keyed artifact merge
+        and before trial filtering and label construction.
+    metadata_transform_name, metadata_transform_version : str | None
+        Stable transform identity included in result fingerprints. Both are
+        required when ``metadata_transform`` is provided.
 
     Returns
     -------
@@ -133,6 +143,11 @@ def run_decoding(
         Decoding result tables keyed by stable public names.
     """
 
+    transform_spec = metadata_transform_spec(
+        metadata_transform,
+        name=metadata_transform_name,
+        version=metadata_transform_version,
+    )
     experiment_name, _ = infer_experiment_settings(
         data_dir=data_dir,
         experiment_name=experiment_name,
@@ -159,6 +174,8 @@ def run_decoding(
             overwrite=overwrite,
             name=name,
             topo_windows_ms=topo_windows_ms,
+            metadata_transform=metadata_transform,
+            transform_spec=transform_spec,
         )
 
     print(f"Running {name}")
@@ -170,6 +187,7 @@ def run_decoding(
         cfg=cfg,
         subject_results_dir=None,
         overwrite=True,
+        metadata_transform=metadata_transform,
         log_path=None,
     )
 
@@ -207,6 +225,9 @@ def run_generalization_decoding(
     file: str | Path | None = None,
     experiment_name: str | None = None,
     cond_col: str = "label",
+    metadata_transform=None,
+    metadata_transform_name: str | None = None,
+    metadata_transform_version: str | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Run one all-window generalization analysis from script settings.
 
@@ -240,6 +261,12 @@ def run_generalization_decoding(
         final folder name from ``data_dir`` is used.
     cond_col : str
         Metadata column used to read condition labels.
+    metadata_transform : callable | None
+        Row-preserving metadata transform applied after keyed artifact merge
+        and before trial filtering and label construction.
+    metadata_transform_name, metadata_transform_version : str | None
+        Stable transform identity included in result fingerprints. Both are
+        required when ``metadata_transform`` is provided.
 
     Returns
     -------
@@ -247,6 +274,11 @@ def run_generalization_decoding(
         Generalization result tables keyed by stable public names.
     """
 
+    transform_spec = metadata_transform_spec(
+        metadata_transform,
+        name=metadata_transform_name,
+        version=metadata_transform_version,
+    )
     experiment_name, _ = infer_experiment_settings(
         data_dir=data_dir,
         experiment_name=experiment_name,
@@ -272,6 +304,8 @@ def run_generalization_decoding(
             classifier=classifier,
             overwrite=overwrite,
             name=name,
+            metadata_transform=metadata_transform,
+            transform_spec=transform_spec,
         )
 
     print(f"Running {name}")
@@ -283,6 +317,7 @@ def run_generalization_decoding(
         cfg=cfg,
         subject_results_dir=None,
         overwrite=True,
+        metadata_transform=metadata_transform,
         log_path=None,
     )
 
@@ -357,6 +392,7 @@ def _process_decoding_store_subjects(
     result_file: Path,
     subject_ids: list[str],
     cfg: DecodingConfig,
+    metadata_transform,
 ) -> None:
     """Process requested same-time decoding subjects into the result store."""
 
@@ -367,6 +403,7 @@ def _process_decoding_store_subjects(
         cfg=cfg,
         subject_results_dir=None,
         overwrite=True,
+        metadata_transform=metadata_transform,
         log_path=None,
     )
     completed_subjects = run_output["trial_summary_df"]["subject"].astype(str).tolist()
@@ -396,12 +433,15 @@ def _run_decoding_store(
     overwrite: bool,
     name: str,
     topo_windows_ms: dict[str, tuple[int, int]],
+    metadata_transform,
+    transform_spec: dict[str, str] | None,
 ) -> dict[str, pd.DataFrame]:
     config_hash = result_config_hash(
         {
             "analysis_type": "decoding",
             "config": cfg.to_dict(),
             "topo_windows_ms": topo_windows_ms,
+            "metadata_transform": transform_spec,
         }
     )
     init_result_store(
@@ -418,6 +458,7 @@ def _run_decoding_store(
             result_file=result_file,
             subject_ids=subjects_to_run,
             cfg=cfg,
+            metadata_transform=metadata_transform,
         ),
         finalize=lambda: _finalize_decoding_store(
             result_file=result_file,
@@ -491,11 +532,14 @@ def _run_generalization_store(
     classifier: dict[str, object],
     overwrite: bool,
     name: str,
+    metadata_transform,
+    transform_spec: dict[str, str] | None,
 ) -> dict[str, pd.DataFrame]:
     config_hash = result_config_hash(
         {
             "analysis_type": "generalization_decoding",
             "config": cfg.to_dict(),
+            "metadata_transform": transform_spec,
         }
     )
     init_result_store(
@@ -512,6 +556,7 @@ def _run_generalization_store(
             result_file=result_file,
             subject_ids=subjects_to_run,
             cfg=cfg,
+            metadata_transform=metadata_transform,
         ),
         finalize=lambda: _finalize_generalization_store(
             result_file=result_file,
@@ -526,6 +571,7 @@ def _process_generalization_store_subjects(
     result_file: Path,
     subject_ids: list[str],
     cfg: DecodingConfig,
+    metadata_transform,
 ) -> None:
     """Process requested generalization subjects into the result store."""
 
@@ -536,6 +582,7 @@ def _process_generalization_store_subjects(
         cfg=cfg,
         subject_results_dir=None,
         overwrite=True,
+        metadata_transform=metadata_transform,
         log_path=None,
     )
     completed_subjects = run_output["trial_summary_df"]["subject"].astype(str).tolist()

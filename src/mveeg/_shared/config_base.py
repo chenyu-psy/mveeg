@@ -55,7 +55,7 @@ class TrialFilterRulesConfig:
         non-missing rows". A tuple means "exclude these values".
     """
 
-    qc_col: str | None = "final_qc_category"
+    qc_col: str | None = "final_status"
     keep_qc: tuple[str, ...] = ("accepted",)
     exclude_metadata: dict[str, tuple | str] | None = None
 

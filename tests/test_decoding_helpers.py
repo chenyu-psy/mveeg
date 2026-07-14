@@ -3,6 +3,7 @@
 import mne
 import numpy as np
 import pandas as pd
+import pytest
 from sklearn.linear_model import LogisticRegression
 
 from mveeg.decoding import workflow as decoding_workflow
@@ -92,6 +93,21 @@ def test_decoding_workflow_facade_keeps_public_imports():
     assert callable(run_generalization_workflow)
     assert callable(export_decoding_outputs)
     assert callable(build_generalization_accuracy_table)
+
+
+def test_decoding_metadata_transform_requires_fingerprint_fields(tmp_path):
+    """Callable metadata transforms need stable analysis fingerprint fields."""
+
+    with pytest.raises(ValueError, match="metadata_transform_name"):
+        run_decoding(
+            **_decoding_kwargs(
+                tmp_path,
+                subject_ids=["001"],
+                overwrite=False,
+                topo_windows_ms={"early": (0, 50)},
+                metadata_transform=lambda frame: frame,
+            )
+        )
 
 
 def test_infer_experiment_settings_uses_data_folder_defaults(tmp_path):

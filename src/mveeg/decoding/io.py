@@ -9,48 +9,33 @@ import mne
 import numpy as np
 import pandas as pd
 
-from .._shared.io_filters import (
+from .._shared.metadata import (
+    list_dataset_subjects,
     load_subject_data_with_filters,
     load_subject_info_with_channel_drop,
-    load_subject_metadata_table,
 )
-from ..io.bids import derivative_file_path, get_subject_ids_from_derivatives
 from .config import DecodingConfig
 
 
-def get_subject_ids(
-    data_dir: str | Path,
-    subject_prefix: str = "sub",
-    derivative_dirname: str = "derivatives",
-    datatype: str = "eeg",
-) -> list[str]:
-    """Return subject IDs available in the derivatives folder."""
+def get_subject_ids(dataset_root: str | Path) -> list[str]:
+    """Return subject indices in a dataset manifest."""
 
-    return get_subject_ids_from_derivatives(
-        data_dir,
-        subject_prefix=subject_prefix,
-        derivative_dirname=derivative_dirname,
-        datatype=datatype,
-    )
-
-
-def load_subject_metadata(subject_id: str, cfg: DecodingConfig) -> pd.DataFrame:
-    """Load the metadata table saved for one subject's epochs."""
-
-    return load_subject_metadata_table(subject_id, cfg)
+    return list_dataset_subjects(dataset_root)
 
 
 def load_subject_decoding_data(
     subject_id: str,
     cfg: DecodingConfig,
     return_metadata: bool = False,
+    metadata_transform=None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
     """Load one subject and apply the configured trial filters."""
 
     return load_subject_data_with_filters(
-        subject_id=subject_id,
+        subject_index=subject_id,
         cfg=cfg,
         return_metadata=return_metadata,
+        metadata_transform=metadata_transform,
     )
 
 
@@ -447,66 +432,3 @@ def generalization_subject_result_exists(output_dir: str | Path, subject_id: str
 
     paths = generalization_subject_result_paths(output_dir, subject_id)
     return all(path.exists() for path in paths.values())
-
-
-def epochs_path_for_subject(subject_id: str, cfg: DecodingConfig) -> Path:
-    """Return the saved epochs path for one subject."""
-
-    return derivative_file_path(
-        cfg.dataset.data_dir,
-        subject_id,
-        cfg.dataset.experiment_name,
-        "epo",
-        ".fif",
-        subject_prefix=cfg.dataset.subject_prefix,
-        derivative_dirname=cfg.dataset.derivative_dirname,
-        datatype=cfg.dataset.derivative_datatype,
-        derivative_label=cfg.dataset.derivative_label,
-    )
-
-
-def events_path_for_subject(subject_id: str, cfg: DecodingConfig) -> Path:
-    """Return the events sidecar path for one subject."""
-
-    return derivative_file_path(
-        cfg.dataset.data_dir,
-        subject_id,
-        cfg.dataset.experiment_name,
-        "events",
-        ".tsv",
-        subject_prefix=cfg.dataset.subject_prefix,
-        derivative_dirname=cfg.dataset.derivative_dirname,
-        datatype=cfg.dataset.derivative_datatype,
-        derivative_label=cfg.dataset.derivative_label,
-    )
-
-
-def load_events_table(subject_id: str, cfg: DecodingConfig) -> pd.DataFrame:
-    """Load the saved events table for one subject."""
-
-    return pd.read_csv(events_path_for_subject(subject_id, cfg), sep="\t")
-
-
-def trial_qc_path_for_subject(subject_id: str, cfg: DecodingConfig) -> Path:
-    """Return the trial-QC sidecar path for one subject."""
-
-    return derivative_file_path(
-        cfg.dataset.data_dir,
-        subject_id,
-        cfg.dataset.experiment_name,
-        "trial_qc",
-        ".tsv",
-        subject_prefix=cfg.dataset.subject_prefix,
-        derivative_dirname=cfg.dataset.derivative_dirname,
-        datatype=cfg.dataset.derivative_datatype,
-        derivative_label=cfg.dataset.derivative_label,
-    )
-
-
-def load_trial_qc_table(subject_id: str, cfg: DecodingConfig) -> pd.DataFrame | None:
-    """Load the optional trial-QC table for one subject."""
-
-    trial_qc_path = trial_qc_path_for_subject(subject_id, cfg)
-    if not trial_qc_path.exists():
-        return None
-    return pd.read_csv(trial_qc_path, sep="\t")

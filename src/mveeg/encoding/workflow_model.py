@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 
-from .._shared.io_filters import load_subject_data_with_filters
+from .._shared.metadata import load_subject_data_with_filters
 from .._shared.time_windows import average_time_windows, build_time_windows
 from .._shared.workflow_subjects import process_subjects
 from .config import EncodingConfig
@@ -100,13 +100,15 @@ def _load_subject_arrays(
     source_condition_col: str,
     source_to_condition: dict[str, str],
     time_window_ms: int,
+    metadata_transform=None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], pd.DataFrame]:
     """Load one subject's EEG, time axis, channels, and mapped conditions."""
 
     data, _, times_s, ch_names, metadata = load_subject_data_with_filters(
-        subject_id=subject_id,
+        subject_index=subject_id,
         cfg=loader_cfg,
         return_metadata=True,
+        metadata_transform=metadata_transform,
     )
     window_centers_ms, window_masks = build_time_windows(
         np.asarray(times_s, dtype=float),
@@ -221,19 +223,6 @@ def _build_condition_subject_design(
         parsed_formula,
         validation,
     )
-
-
-def _apply_metadata_assign(metadata: pd.DataFrame, metadata_assign) -> pd.DataFrame:
-    """Apply optional trial metadata assignment."""
-
-    if metadata_assign is None:
-        return metadata.copy()
-    output = metadata_assign(metadata.copy())
-    if not isinstance(output, pd.DataFrame):
-        raise TypeError("metadata_assign must return a pandas DataFrame.")
-    if len(output) != len(metadata):
-        raise ValueError("metadata_assign must preserve the number of trial rows.")
-    return output.reset_index(drop=True)
 
 
 def _normalize_penalty(penalty: dict[str, float] | None) -> dict[str, float]:
@@ -474,7 +463,7 @@ def _fit_one_encoding_subject(
     train_condition_labels: tuple[str, ...] | None,
     design_cfg: EncodingConfig,
     formula: str,
-    metadata_assign,
+    metadata_transform,
     penalty: dict[str, float] | None,
     covariance: str,
     cv_n_splits: int,
@@ -493,9 +482,9 @@ def _fit_one_encoding_subject(
         source_condition_col=source_condition_col,
         source_to_condition=source_to_condition,
         time_window_ms=time_window_ms,
+        metadata_transform=metadata_transform,
     )
     progress_bar.set_postfix_str("preparing")
-    metadata = _apply_metadata_assign(metadata, metadata_assign)
     ridge_penalty = _normalize_penalty(penalty)
 
     if train_condition_labels is None:
@@ -730,7 +719,7 @@ def run_regression_model_workflow(
     loader_cfg,
     design_cfg: EncodingConfig,
     formula: str,
-    metadata_assign=None,
+    metadata_transform=None,
     penalty: dict[str, float] | None = None,
     source_to_condition: dict[str, str] | None = None,
     train_condition_labels: list[str] | tuple[str, ...] | None = None,
@@ -761,9 +750,9 @@ def run_regression_model_workflow(
         Design validation settings.
     formula : str
         Formula selecting metadata predictors and random intercept terms.
-    metadata_assign : callable | None
-        Optional callable that returns assigned trial metadata before formula
-        design construction.
+    metadata_transform : callable | None
+        Optional row-preserving transform applied after artifact metadata is
+        merged and before trial filtering and formula design construction.
     penalty : dict | None
         Ridge penalties for fixed and random terms.
     source_to_condition : dict[str, str] | None
@@ -834,7 +823,7 @@ def run_regression_model_workflow(
             train_condition_labels=train_condition_labels,
             design_cfg=design_cfg,
             formula=formula,
-            metadata_assign=metadata_assign,
+            metadata_transform=metadata_transform,
             penalty=penalty,
             covariance=covariance,
             cv_n_splits=cv_n_splits,
@@ -973,6 +962,7 @@ def _fit_model_comparison_subject(
     cv_random_state: int,
     time_window_ms: int,
     standardize_data: bool,
+    metadata_transform,
     progress_bar,
 ) -> dict[str, pd.DataFrame]:
     """Compare one subject's candidate encoding models by held-out prediction."""
@@ -984,6 +974,7 @@ def _fit_model_comparison_subject(
         source_condition_col=source_condition_col,
         source_to_condition=source_to_condition,
         time_window_ms=time_window_ms,
+        metadata_transform=metadata_transform,
     )
     cv = _condition_cv(
         condition_values=condition_values,
@@ -1234,6 +1225,7 @@ def compare_encoding_models_workflow(
     results_dir: str | Path | None = None,
     run_name: str = "encoding_model_comparison",
     config_payload: dict[str, object] | None = None,
+    metadata_transform=None,
     log_path: str | Path | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Compare candidate condition-level encoding models by held-out EEG prediction."""
@@ -1275,6 +1267,7 @@ def compare_encoding_models_workflow(
             cv_random_state=cv_random_state,
             time_window_ms=time_window_ms,
             standardize_data=standardize_data,
+            metadata_transform=metadata_transform,
             progress_bar=progress_bar,
         )
         subject_results[str(subject_id)] = result

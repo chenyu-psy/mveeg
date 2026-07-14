@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mveeg"
-version = "0.2.0"
-description = "Multivariate encoding and decoding models for EEG research"
+version = "0.3.0"
+description = "Manifest-backed EEG preprocessing, encoding, and decoding"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

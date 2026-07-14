@@ -15,14 +15,10 @@ DEFAULT_DROP_TYPES = ("eog", "eyegaze", "pupil", "misc")
 
 @dataclass
 class DatasetConfig:
-    """Dataset paths and derivative naming used by the decoding workflow."""
+    """Prepared/preprocessed dataset root used by the decoding workflow."""
 
     data_dir: str | Path
     experiment_name: str
-    subject_prefix: str = "sub"
-    derivative_dirname: str = "derivatives"
-    derivative_datatype: str = "eeg"
-    derivative_label: str = "preprocessed"
 
 
 @dataclass
@@ -38,7 +34,7 @@ class ConditionConfig:
 class TrialFilterConfig:
     """Trial-level inclusion and exclusion rules for decoding."""
 
-    qc_col: str | None = "final_qc_category"
+    qc_col: str | None = "final_status"
     keep_qc: tuple[str, ...] = ("accepted",)
     exclude_metadata: dict[str, tuple | str] | None = None
 
@@ -213,12 +209,10 @@ class DecodingConfig:
     def label_for_metadata_row(self, metadata: pd.DataFrame) -> np.ndarray:
         """Return training labels for the filtered metadata rows."""
 
-        raw_labels = metadata["label"].to_numpy(dtype=object)
+        source_values = metadata[self.conditions.cond_col].to_numpy(dtype=object)
 
         if not isinstance(self.conditions.train_cond, dict):
-            return raw_labels
-
-        source_values = metadata[self.conditions.cond_col].to_numpy(dtype=object)
+            return source_values
 
         mapped_labels = np.empty(len(metadata), dtype=object)
         mapped_labels[:] = ""

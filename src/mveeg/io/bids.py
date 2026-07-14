@@ -170,7 +170,7 @@ def derivative_file_path(
     experiment_name : str
         Task or experiment label used in filenames.
     suffix : str
-        File suffix such as ``"epo"`` or ``"trial_qc"``.
+        File suffix such as ``"epo"`` or ``"artifacts"``.
     extension : str
         Filename extension including the leading dot.
     subject_prefix : str, optional

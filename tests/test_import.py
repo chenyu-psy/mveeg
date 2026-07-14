@@ -1,5 +1,7 @@
 """Minimal tests that verify package imports and metadata."""
 
+import importlib
+
 import tomllib
 
 import pytest
@@ -29,6 +31,23 @@ def test_subpackages_importable():
     import mveeg.io
     import mveeg.summaries
     import mveeg.validation
+
+
+def test_preprocessing_public_api_is_03_only():
+    """The package should expose the 0.3 entry points without legacy modules."""
+    expected = {
+        "init_pipeline",
+        "init_external",
+        "open_pipeline",
+        "preprocess_epochs",
+        "steps",
+    }
+    assert expected.issubset(set(mveeg.prep.__all__))
+    assert callable(mveeg.transform_metadata)
+
+    for module in ("core", "workflow", "qc", "epoched_mat", "visualizer"):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(f"mveeg.prep.{module}")
 
 
 def test_check_trial_count_passes():

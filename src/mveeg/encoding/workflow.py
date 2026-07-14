@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from .._shared.topography import build_topography_coord_table
+from .._shared.metadata import metadata_transform_spec
 from ..io.results import (
     init_result_store,
     read_internal_table,
@@ -92,7 +93,9 @@ def run_regression_model(
     overwrite: bool,
     name: str,
     file: str | Path | None = None,
-    metadata_assign=None,
+    metadata_transform=None,
+    metadata_transform_name: str | None = None,
+    metadata_transform_version: str | None = None,
     penalty: dict[str, float] | None = None,
     train_condition_labels: list[str] | tuple[str, ...] | None = None,
     topography: dict[str, object] | None = None,
@@ -123,6 +126,12 @@ def run_regression_model(
         Optional single-file DuckDB cache for the returned result tables. Paths
         without a suffix receive ``.duckdb``. Existing files are loaded unless
         ``overwrite=True``.
+    metadata_transform : callable | None
+        Row-preserving metadata transform applied after keyed artifact merge
+        and before trial filtering and formula construction.
+    metadata_transform_name, metadata_transform_version : str | None
+        Stable transform identity included in result fingerprints. Both are
+        required when ``metadata_transform`` is provided.
     train_condition_labels : list[str] | tuple[str, ...] | None
         Optional analysis condition labels used for model fitting.
     topography : dict[str, object] | None
@@ -134,6 +143,10 @@ def run_regression_model(
         folder name from ``data_dir`` is used.
     cond_col : str
         Metadata column used to read raw condition labels.
+    metadata_transform : callable | None
+        Row-preserving metadata transform applied before trial filtering.
+    metadata_transform_name, metadata_transform_version : str | None
+        Stable transform identity; both are required with a transform.
 
     Returns
     -------
@@ -141,6 +154,11 @@ def run_regression_model(
         Encoding result tables keyed by stable public names.
     """
 
+    transform_spec = metadata_transform_spec(
+        metadata_transform,
+        name=metadata_transform_name,
+        version=metadata_transform_version,
+    )
     experiment_name, _ = infer_experiment_settings(
         data_dir=data_dir,
         experiment_name=experiment_name,
@@ -196,7 +214,7 @@ def run_regression_model(
             loader_cfg=loader_cfg,
             design_cfg=design_cfg,
             formula=formula,
-            metadata_assign=metadata_assign,
+            metadata_transform=metadata_transform,
             penalty=penalty,
             source_to_condition=source_to_condition,
             train_condition_labels=train_condition_labels,
@@ -217,6 +235,7 @@ def run_regression_model(
                 "encoding_params": encoding_params,
                 "condition_label_map": condition_label_map,
                 "formula": formula,
+                "metadata_transform": transform_spec,
                 "penalty": penalty,
                 "train_condition_labels": train_condition_labels,
                 "topography": topography,
@@ -231,7 +250,7 @@ def run_regression_model(
         loader_cfg=loader_cfg,
         design_cfg=design_cfg,
         formula=formula,
-        metadata_assign=metadata_assign,
+        metadata_transform=metadata_transform,
         penalty=penalty,
         source_to_condition=source_to_condition,
         train_condition_labels=train_condition_labels,
@@ -267,6 +286,9 @@ def compare_encoding_models(
     reference_model: str | None = None,
     experiment_name: str | None = None,
     cond_col: str = "label",
+    metadata_transform=None,
+    metadata_transform_name: str | None = None,
+    metadata_transform_version: str | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Compare candidate encoding models by held-out multichannel EEG prediction.
 
@@ -304,6 +326,11 @@ def compare_encoding_models(
         Model-comparison and diagnostic tables.
     """
 
+    metadata_transform_spec(
+        metadata_transform,
+        name=metadata_transform_name,
+        version=metadata_transform_version,
+    )
     experiment_name, _ = infer_experiment_settings(
         data_dir=data_dir,
         experiment_name=experiment_name,
@@ -357,6 +384,7 @@ def compare_encoding_models(
         results_dir=None,
         run_name=name,
         config_payload=None,
+        metadata_transform=metadata_transform,
         log_path=None,
     )
     return {
@@ -375,7 +403,7 @@ def _run_regression_model_store(
     loader_cfg,
     design_cfg: EncodingConfig,
     formula: str,
-    metadata_assign,
+    metadata_transform,
     penalty: dict[str, float] | None,
     source_to_condition: dict[str, str],
     train_condition_labels: list[str] | tuple[str, ...] | None,
@@ -406,7 +434,7 @@ def _run_regression_model_store(
             loader_cfg=loader_cfg,
             design_cfg=design_cfg,
             formula=formula,
-            metadata_assign=metadata_assign,
+            metadata_transform=metadata_transform,
             penalty=penalty,
             source_to_condition=source_to_condition,
             train_condition_labels=train_condition_labels,
@@ -437,7 +465,7 @@ def _process_regression_model_store_subjects(
     loader_cfg,
     design_cfg: EncodingConfig,
     formula: str,
-    metadata_assign,
+    metadata_transform,
     penalty: dict[str, float] | None,
     source_to_condition: dict[str, str],
     train_condition_labels: list[str] | tuple[str, ...] | None,
@@ -455,7 +483,7 @@ def _process_regression_model_store_subjects(
         loader_cfg=loader_cfg,
         design_cfg=design_cfg,
         formula=formula,
-        metadata_assign=metadata_assign,
+        metadata_transform=metadata_transform,
         penalty=penalty,
         source_to_condition=source_to_condition,
         train_condition_labels=train_condition_labels,
