@@ -1,6 +1,7 @@
 """Tests for the shared dataset-root metadata contract."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import mne
 import numpy as np
@@ -13,16 +14,7 @@ from mveeg._shared.metadata import (
     metadata_transform_spec,
     transform_metadata,
 )
-from mveeg.decoding.io import load_subject_decoding_data
 from mveeg.encoding.workflow_model import _load_subject_arrays
-from mveeg.decoding.config import (
-    ConditionConfig,
-    DatasetConfig,
-    DecodeParamConfig,
-    DecodingConfig,
-    ModelConfig,
-    TrialFilterConfig,
-)
 
 
 def test_transform_metadata_preserves_trial_identity():
@@ -87,21 +79,7 @@ def test_metadata_transform_requires_stable_fingerprint_fields():
 
 def test_dataset_loader_key_merges_artifacts_before_transform_and_filters(tmp_path):
     root = _write_dataset(tmp_path)
-    cfg = DecodingConfig(
-        dataset=DatasetConfig(data_dir=root, experiment_name="task"),
-        conditions=ConditionConfig(
-            train_cond={"a": ["a"], "b": ["b"]},
-            test_cond={"a": ["a"], "b": ["b"]},
-            cond_col="condition",
-        ),
-        filters=TrialFilterConfig(qc_col="final_status", keep_qc=("accepted",)),
-        decode=DecodeParamConfig(
-            crop_time=None,
-            n_repeats=1,
-            drop_channel_types=(),
-        ),
-        model=ModelConfig(),
-    )
+    cfg = _loader_config(root, condition_col="condition", values=("a", "b"))
 
     data, labels, _times, _channels, metadata = load_subject_data_with_filters(
         "001",
@@ -177,45 +155,9 @@ def test_dataset_loader_does_not_discover_unlisted_artifact_sidecar(tmp_path):
     assert "final_status" not in metadata.columns
 
 
-def test_decoding_loader_calls_shared_subject_index_api(tmp_path):
-    root = _write_dataset(tmp_path)
-    cfg = DecodingConfig(
-        dataset=DatasetConfig(data_dir=root, experiment_name="task"),
-        conditions=ConditionConfig(
-            train_cond={"a": ["a"], "b": ["b"]},
-            test_cond={"a": ["a"], "b": ["b"]},
-            cond_col="condition",
-        ),
-        filters=TrialFilterConfig(qc_col="final_status", keep_qc=("accepted",)),
-        decode=DecodeParamConfig(crop_time=None, n_repeats=1, drop_channel_types=()),
-        model=ModelConfig(),
-    )
-
-    data, labels, *_ = load_subject_decoding_data(
-        "001",
-        cfg,
-        metadata_transform=lambda frame: frame.assign(
-            condition=frame["raw_condition"].str.lower()
-        ),
-    )
-
-    assert data.shape[0] == 2
-    assert labels.tolist() == ["a", "b"]
-
-
 def test_encoding_loader_calls_shared_subject_index_api(tmp_path):
     root = _write_dataset(tmp_path)
-    cfg = DecodingConfig(
-        dataset=DatasetConfig(data_dir=root, experiment_name="task"),
-        conditions=ConditionConfig(
-            train_cond={"a": ["A"], "b": ["B"]},
-            test_cond={"a": ["A"], "b": ["B"]},
-            cond_col="raw_condition",
-        ),
-        filters=TrialFilterConfig(qc_col="final_status", keep_qc=("accepted",)),
-        decode=DecodeParamConfig(crop_time=None, n_repeats=1, drop_channel_types=()),
-        model=ModelConfig(),
-    )
+    cfg = _loader_config(root, condition_col="raw_condition", values=("A", "B"))
 
     data, conditions, times, channels, metadata = _load_subject_arrays(
         subject_id="001",
@@ -230,6 +172,28 @@ def test_encoding_loader_calls_shared_subject_index_api(tmp_path):
     assert times.tolist() == [0.01, 0.03]
     assert channels == ["Fz", "Cz"]
     assert metadata["epoch_index"].tolist() == [0, 3]
+
+
+def _loader_config(root, *, condition_col, values):
+    groups = {str(value).lower(): [value] for value in values}
+    return SimpleNamespace(
+        dataset=SimpleNamespace(data_dir=root),
+        conditions=SimpleNamespace(
+            train_cond=groups,
+            test_cond=groups,
+            cond_col=condition_col,
+        ),
+        filters=SimpleNamespace(
+            qc_col="final_status",
+            keep_qc=("accepted",),
+            exclude_metadata={},
+        ),
+        decode=SimpleNamespace(
+            crop_time=None,
+            drop_channel_types=(),
+            drop_channels=(),
+        ),
+    )
 
 
 def _write_dataset(tmp_path: Path) -> Path:

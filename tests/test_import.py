@@ -50,6 +50,30 @@ def test_preprocessing_public_api_is_03_only():
             importlib.import_module(f"mveeg.prep.{module}")
 
 
+def test_decoding_public_api_has_no_legacy_facade():
+    pipeline_methods = {
+        "transform_metadata",
+        "select_trials",
+        "prepare_epochs",
+        "setup_classifier",
+        "setup_cv",
+        "decode",
+    }
+    assert pipeline_methods.issubset(set(dir(mveeg.prep.DatasetPipeline)))
+    for module in (
+        "config",
+        "io",
+        "run",
+        "summaries",
+        "workflow",
+        "workflow_outputs",
+        "workflow_paths",
+        "workflow_subjects",
+    ):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(f"mveeg.decoding.{module}")
+
+
 def test_check_trial_count_passes():
     """check_trial_count should not raise when n_trials >= min_trials."""
     # Default threshold is 20; passing 20 or more should be silent.

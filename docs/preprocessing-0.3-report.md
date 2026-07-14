@@ -10,9 +10,9 @@ eager external pipeline. Both write the same manifest-backed prepared dataset,
 which is then consumed by signal preprocessing, artifact labeling, manual
 review, encoding, and decoding.
 
-This implementation covers preprocessing and the shared dataset/metadata
-contract used by encoding and decoding. The model-facing API redesign remains
-deferred, as planned.
+This report covers preprocessing and the dataset/metadata contract used by
+model analyses. Decoding now has a separate public API and DuckDB contract;
+encoding remains unchanged pending its own complete redesign.
 
 ## Public architecture
 
@@ -225,7 +225,7 @@ group. Status edits stay in memory until `w`; that key writes the edits and
 marks only visited epochs reviewed. Unshown epochs remain unchanged, and
 closing without `w` writes nothing.
 
-## Encoding and decoding bridge
+## Model-analysis bridge
 
 Both downstream loaders now consume an explicit prepared/preprocessed dataset
 root through the shared manifest loader. Artifact summaries are joined only on
@@ -233,11 +233,10 @@ root through the shared manifest loader. Artifact summaries are joined only on
 Missing or duplicate identity keys fail rather than falling back to DataFrame
 index or row position.
 
-The encoding-only `assign_metadata` implementation was removed. Both modules
-use the shared `transform_metadata` contract. A modeling transform runs after
-artifact merge and before filtering or condition construction, preserves
-identity, and affects only the current analysis. Its required `name` and
-`version` participate in the analysis fingerprint.
+The encoding-only `assign_metadata` implementation was removed. A modeling
+transform runs after artifact merge and before filtering or condition
+construction, preserves identity, and affects only the current analysis. Its
+required `name` and `version` participate in the analysis fingerprint.
 
 ## Removed 0.2 surface
 
@@ -388,13 +387,9 @@ The smoke artifacts were written under
   labels or saved signal data.
 - No new runtime dependency was added for the refactor.
 
-## Deferred model-API discussion
+## Model API status
 
-The following remain intentionally unchanged pending the next design
-discussion:
-
-- a unified encoding/decoding top-level syntax;
-- condition, label, filter, and output argument organization;
-- subject-level versus batch modeling boundaries;
-- optional decoding topography;
-- result return, automatic saving, and model fingerprint contracts.
+Decoding now uses the pipeline API and documented DuckDB tables described in
+`docs/decoding.md`. Encoding is intentionally untouched by that redesign and
+will be replaced independently rather than being forced into decoding's
+structure.

@@ -1,99 +1,101 @@
-"""Model-building helpers for the EEG decoding workflow."""
+"""Classifier construction and interpretable linear patterns."""
 
 from __future__ import annotations
+
+from itertools import combinations
 
 import numpy as np
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
-from .config import DecodingConfig
+
+CLASSIFIERS = {"logistic_regression", "lda", "linear_svm"}
 
 
-def build_classifier(cfg: DecodingConfig):
-    """Return the classifier used for decoding."""
+def classifier_settings(name: str, parameters: dict[str, object]) -> dict[str, object]:
+    """Validate and resolve one built-in classifier specification."""
 
-    if cfg.model.classifier is not None:
-        return cfg.model.classifier
-
-    return build_classifier_from_spec(cfg.model.classifier_spec)
-
-
-def build_classifier_from_spec(classifier_spec: dict) -> object:
-    """Build a classifier from a structured script-facing specification."""
-
-    backend = classifier_spec["backend"]
-    model_name = classifier_spec["model_name"]
-    model_params = dict(classifier_spec["model_params"])
-
-    if backend != "sklearn":
-        raise ValueError(
-            f"Unsupported classifier backend: {backend}. "
-            "Add a builder for this backend before using it in an analysis script."
-        )
-
-    if model_name == "logistic_regression":
-        if "solver" not in model_params:
-            model_params["solver"] = "lbfgs"
-        if "max_iter" not in model_params:
-            model_params["max_iter"] = 1000
-        return LogisticRegression(**model_params)
-
-    if model_name == "lda":
-        return LinearDiscriminantAnalysis(**model_params)
-
-    if model_name == "svm_linear":
-        if "kernel" not in model_params:
-            model_params["kernel"] = "linear"
-        if "probability" not in model_params:
-            model_params["probability"] = False
-        return SVC(**model_params)
-
-    raise ValueError(
-        f"Unsupported sklearn classifier model_name: {model_name}. "
-        "Add it to build_classifier_from_spec before using it in an analysis script."
-    )
+    if name not in CLASSIFIERS:
+        raise ValueError(f"classifier must be one of {sorted(CLASSIFIERS)}.")
+    resolved = dict(parameters)
+    if name == "logistic_regression":
+        resolved.setdefault("solver", "lbfgs")
+        resolved.setdefault("max_iter", 1000)
+    elif name == "linear_svm":
+        if resolved.get("kernel", "linear") != "linear":
+            raise ValueError("linear_svm only accepts kernel='linear'.")
+        resolved["kernel"] = "linear"
+        resolved.setdefault("probability", False)
+    return resolved
 
 
-def binary_pattern_sign(model, label_order: list[str]) -> float:
-    """Return a sign that aligns weights with the requested label order."""
+def make_classifier(name: str, parameters: dict[str, object]):
+    """Construct one fresh built-in classifier."""
 
-    if len(label_order) != 2 or not hasattr(model, "classes_"):
-        return 1.0
-
-    model_classes = list(model.classes_)
-    if model_classes == label_order:
-        return 1.0
-    if model_classes == label_order[::-1]:
-        return -1.0
-    return 1.0
+    settings = classifier_settings(name, parameters)
+    if name == "logistic_regression":
+        return LogisticRegression(**settings)
+    if name == "lda":
+        return LinearDiscriminantAnalysis(**settings)
+    return SVC(**settings)
 
 
-def get_binary_weights(model, scaler: StandardScaler) -> np.ndarray:
-    """Extract classifier weights for binary decoding models."""
+def native_evidence(model, data: np.ndarray) -> tuple[np.ndarray, list[int]]:
+    """Return classifier-native decision values and their per-trial shape."""
 
-    coef = np.asarray(model.coef_, dtype=float)
-    if coef.ndim == 2:
-        coef = coef[0]
-    return coef / scaler.scale_
+    values = np.asarray(model.decision_function(data), dtype=float)
+    shape = [] if values.ndim == 1 else list(values.shape[1:])
+    return values, shape
 
 
-def compute_haufe_pattern(
-    X_train: np.ndarray,
-    X_train_scaled: np.ndarray,
+def haufe_patterns(
+    raw_training: np.ndarray,
+    scaled_training: np.ndarray,
     model,
 ) -> np.ndarray:
-    """Compute Haufe patterns from one fitted binary classifier."""
+    """Return one Haufe activation pattern per native linear filter.
 
-    weights = np.asarray(model.coef_, dtype=float)
-    if weights.ndim == 2:
-        weights = weights[0]
+    The returned array has shape ``(n_components, n_channels)``. Patterns are
+    expressed in the original sensor scale even though the estimator is fitted
+    in standardized feature space.
+    """
 
-    cov_x = np.cov(X_train, rowvar=False)
-    decision = X_train_scaled @ weights
-    cov_s = np.var(decision, ddof=1)
+    filters = np.asarray(model.coef_, dtype=float)
+    if filters.ndim == 1:
+        filters = filters[np.newaxis, :]
+    if filters.ndim != 2 or filters.shape[1] != raw_training.shape[1]:
+        raise ValueError("Classifier coefficients do not match the EEG channel axis.")
+    if len(raw_training) < 2:
+        raise ValueError("At least two training pseudotrials are required for Haufe patterns.")
 
-    if cov_s == 0:
-        return np.zeros(X_train.shape[1], dtype=float)
-    return (cov_x @ weights) / cov_s
+    scores = scaled_training @ filters.T
+    if scores.ndim == 1:
+        scores = scores[:, np.newaxis]
+    joined = np.column_stack([raw_training, scores])
+    covariance = np.cov(joined, rowvar=False, ddof=1)
+    n_channels = raw_training.shape[1]
+    cov_xs = covariance[:n_channels, n_channels:]
+    cov_s = np.atleast_2d(covariance[n_channels:, n_channels:])
+    patterns = cov_xs @ np.linalg.pinv(cov_s)
+
+    score_variance = np.var(scores, axis=0, ddof=1)
+    patterns[:, score_variance <= np.finfo(float).eps] = np.nan
+    return patterns.T
+
+
+def pattern_components(model, classifier: str) -> list[list[str]]:
+    """Describe each native coefficient row without changing its geometry."""
+
+    classes = [str(value) for value in model.classes_]
+    rows = np.atleast_2d(np.asarray(model.coef_)).shape[0]
+    if rows == 1:
+        return [classes]
+    if classifier == "linear_svm":
+        pairs = [list(pair) for pair in combinations(classes, 2)]
+        if len(pairs) != rows:
+            raise ValueError("linear_svm coefficient rows do not match its class pairs.")
+        return pairs
+    if rows != len(classes):
+        raise ValueError("Classifier coefficient rows do not match fitted classes.")
+    return [[label] for label in classes]

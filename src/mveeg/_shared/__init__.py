@@ -17,7 +17,7 @@ from .metadata import (
     load_subject_metadata_table,
     transform_metadata,
 )
-from .time_windows import average_time_windows, build_time_windows
+from .time_windows import average_time_windows, build_time_bins, build_time_windows
 from .topography import build_topography_coord_table
 from .workflow_subjects import process_subjects
 
@@ -34,6 +34,7 @@ __all__ = [
     "load_subject_metadata_table",
     "transform_metadata",
     "average_time_windows",
+    "build_time_bins",
     "build_topography_coord_table",
     "build_time_windows",
     "process_subjects",

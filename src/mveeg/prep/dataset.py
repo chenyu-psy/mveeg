@@ -75,6 +75,9 @@ class DatasetPipeline:
             raise ValueError("Manifest and provenance disagree on task or processing stage.")
         if description.get("Task") != self.task or description.get("Stage") != self.stage:
             raise ValueError("Manifest and dataset_description disagree on task or processing stage.")
+        from ..decoding.pipeline import initialize_analysis_state
+
+        initialize_analysis_state(self)
 
     @property
     def manifest(self) -> pd.DataFrame:
@@ -249,6 +252,121 @@ class DatasetPipeline:
             time_window=time_window,
             hide_channels=hide_channels,
             scalings=scalings,
+        )
+
+    def transform_metadata(
+        self,
+        transform,
+        *,
+        name: str,
+        version: str,
+    ) -> DatasetPipeline:
+        """Register a row-preserving transform for later model analyses."""
+
+        from ..decoding.pipeline import set_metadata_transform
+
+        set_metadata_transform(self, transform, name=name, version=version)
+        return self
+
+    def select_trials(
+        self,
+        *,
+        qc: str | None = "final_status",
+        keep: Sequence[object] = ("accepted",),
+        exclude: Mapping[str, Sequence[object] | str] | None = None,
+    ) -> DatasetPipeline:
+        """Register trial quality and metadata exclusions for models."""
+
+        from ..decoding.pipeline import set_trial_selection
+
+        set_trial_selection(self, qc=qc, keep=keep, exclude=exclude)
+        return self
+
+    def prepare_epochs(
+        self,
+        *,
+        crop: tuple[float, float] | None = (0.0, 0.8),
+        time_bin: int = 50,
+        drop_channel_types: Sequence[str] = ("eog", "eyegaze", "pupil", "misc"),
+        drop_channels: Sequence[str] = (),
+    ) -> DatasetPipeline:
+        """Register epoch cropping, time bins, and analysis channels."""
+
+        from ..decoding.pipeline import set_epoch_preparation
+
+        set_epoch_preparation(
+            self,
+            crop=crop,
+            time_bin=time_bin,
+            drop_channel_types=drop_channel_types,
+            drop_channels=drop_channels,
+        )
+        return self
+
+    def setup_classifier(
+        self,
+        *,
+        classifier: str = "logistic_regression",
+        **parameters,
+    ) -> DatasetPipeline:
+        """Select a built-in linear classifier without fitting it yet."""
+
+        from ..decoding.pipeline import set_classifier
+
+        set_classifier(self, classifier=classifier, parameters=parameters)
+        return self
+
+    def setup_cv(
+        self,
+        *,
+        folds: int = 5,
+        repeats: int = 20,
+        trial_averaging: int = 5,
+        permutations: int = 0,
+        seed: int | None = None,
+    ) -> DatasetPipeline:
+        """Configure repeated stratified cross-validation."""
+
+        from ..decoding.pipeline import set_cv
+
+        set_cv(
+            self,
+            folds=folds,
+            repeats=repeats,
+            trial_averaging=trial_averaging,
+            permutations=permutations,
+            seed=seed,
+        )
+        return self
+
+    def decode(
+        self,
+        *,
+        target: str,
+        classes: Mapping[str, Sequence[object]],
+        evidence: Mapping[str, Sequence[object]] | None = None,
+        generalization: Mapping[str, Sequence[object]] | None = None,
+        output: str = "mean",
+        file: str | Path,
+        recompute: str = "never",
+        n_jobs: int = 1,
+        progress: bool = True,
+    ) -> None:
+        """Run decoding and write the documented DuckDB result tables."""
+
+        from ..decoding.pipeline import decode
+
+        return decode(
+            self,
+            target=target,
+            classes=classes,
+            evidence=evidence,
+            generalization=generalization,
+            output=output,
+            file=file,
+            recompute=recompute,
+            n_jobs=n_jobs,
+            progress=progress,
         )
 
     def _subject_row(self, subject_index: str | int) -> pd.Series:

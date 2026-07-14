@@ -1,5 +1,7 @@
-"""EEG decoding package.
+"""Multiclass EEG decoding used through ``prep.open_pipeline()``.
 
-Import from the explicit submodules in this package, such as
-``mveeg.decoding.config`` or ``mveeg.decoding.workflow``.
+The public workflow lives on :class:`mveeg.prep.DatasetPipeline`; this
+subpackage contains decoding-specific scientific implementation only.
 """
+
+__all__: list[str] = []

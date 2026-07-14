@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 
 def build_time_windows(times_s: np.ndarray, window_ms: int) -> tuple[np.ndarray, np.ndarray]:
@@ -27,25 +28,45 @@ def build_time_windows(times_s: np.ndarray, window_ms: int) -> tuple[np.ndarray,
     [25, 75]
     """
 
-    times_ms = np.round(times_s * 1000).astype(int)
-    start_ms = int(times_ms[0])
-    end_ms = int(times_ms[-1])
+    bins, masks = build_time_bins(times_s, window_ms)
+    return bins["time"].to_numpy(dtype=int), masks
 
-    bin_starts = np.arange(start_ms, end_ms, window_ms, dtype=int)
-    bin_ends = np.minimum(bin_starts + window_ms, end_ms)
-    centers_ms = np.round(bin_starts + (bin_ends - bin_starts) / 2).astype(int)
 
-    window_rows = []
-    for window_ix, (bin_start, bin_end) in enumerate(zip(bin_starts, bin_ends)):
-        is_last_window = window_ix == len(bin_starts) - 1
-        if is_last_window:
-            mask = (times_ms >= bin_start) & (times_ms <= bin_end)
+def build_time_bins(times_s: np.ndarray, window_ms: int) -> tuple[pd.DataFrame, np.ndarray]:
+    """Build the public center/start/end contract and sample masks.
+
+    All table values are milliseconds. Non-final bins are left-closed and
+    right-open; the final bin includes its right edge.
+    """
+
+    times = np.asarray(times_s, dtype=float)
+    if times.ndim != 1 or len(times) == 0:
+        raise ValueError("times_s must be a non-empty one-dimensional array.")
+    if not np.all(np.isfinite(times)) or np.any(np.diff(times) <= 0):
+        raise ValueError("times_s must contain finite, strictly increasing values.")
+    if not isinstance(window_ms, (int, np.integer)) or int(window_ms) < 1:
+        raise ValueError("window_ms must be a positive integer.")
+
+    times_ms = np.round(times * 1000).astype(int)
+    start = int(times_ms[0])
+    stop = int(times_ms[-1])
+    starts = np.arange(start, stop, int(window_ms), dtype=int)
+    if len(starts) == 0:
+        raise ValueError("The epoch time range is shorter than one time bin.")
+    ends = np.minimum(starts + int(window_ms), stop)
+    centers = np.round(starts + (ends - starts) / 2).astype(int)
+
+    masks = []
+    for index, (left, right) in enumerate(zip(starts, ends)):
+        if index == len(starts) - 1:
+            masks.append((times_ms >= left) & (times_ms <= right))
         else:
-            mask = (times_ms >= bin_start) & (times_ms < bin_end)
-        window_rows.append(mask)
+            masks.append((times_ms >= left) & (times_ms < right))
+    masks = np.asarray(masks, dtype=bool)
+    if np.any(masks.sum(axis=1) == 0):
+        raise ValueError("At least one time bin contains no EEG samples.")
 
-    window_masks = np.array(window_rows, dtype=bool)
-    return centers_ms, window_masks
+    return pd.DataFrame({"time": centers, "start": starts, "end": ends}), masks
 
 
 def average_time_windows(data: np.ndarray, window_masks: np.ndarray) -> np.ndarray:

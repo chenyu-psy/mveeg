@@ -925,6 +925,7 @@ source = { editable = "." }
 dependencies = [
     { name = "autoreject" },
     { name = "duckdb" },
+    { name = "joblib" },
     { name = "matplotlib" },
     { name = "mne" },
     { name = "mne-bids", version = "0.17.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -954,6 +955,7 @@ dev = [
 requires-dist = [
     { name = "autoreject" },
     { name = "duckdb" },
+    { name = "joblib", specifier = ">=1.4" },
     { name = "matplotlib" },
     { name = "mne" },
     { name = "mne-bids" },

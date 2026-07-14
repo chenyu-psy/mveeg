@@ -1,130 +1,202 @@
-"""Data-preparation helpers for the EEG decoding workflow."""
+"""Trial selection and training-only averaging for decoding."""
 
 from __future__ import annotations
 
-import mne
+from collections.abc import Mapping, Sequence
+
 import numpy as np
 import pandas as pd
 
-from .._shared.io_filters import channels_to_drop_by_rule
-from .._shared.time_windows import (
-    average_time_windows as shared_average_time_windows,
-)
-from .._shared.time_windows import build_time_windows as shared_build_time_windows
-from .config import DecodingConfig
+
+DEFAULT_DROP_TYPES = ("eog", "eyegaze", "pupil", "misc")
+RESERVED_TRIAL_COLUMNS = {"subject", "trial", "class", "evidence_group"}
 
 
-def build_time_windows(times_s: np.ndarray, window_ms: int) -> tuple[np.ndarray, np.ndarray]:
-    """Build time windows for averaging the EEG signal.
+def validate_groups(
+    classes: Mapping[str, Sequence[object]],
+    evidence: Mapping[str, Sequence[object]] | None,
+) -> tuple[dict[str, list[object]], dict[str, list[object]]]:
+    """Validate training and evidence mappings and preserve their order."""
 
-    This wrapper keeps the decoding API stable while using the shared helper.
-    """
-
-    return shared_build_time_windows(times_s, window_ms)
-
-
-def average_time_windows(data: np.ndarray, window_masks: np.ndarray) -> np.ndarray:
-    """Average EEG data within each time window.
-
-    This wrapper keeps the decoding API stable while using the shared helper.
-    """
-
-    return shared_average_time_windows(data, window_masks)
+    class_map = _validate_mapping("classes", classes, minimum=2)
+    evidence_map = class_map.copy() if evidence is None else _validate_mapping(
+        "evidence", evidence, minimum=1
+    )
+    class_values = [value for values in class_map.values() for value in values]
+    evidence_values = {value for values in evidence_map.values() for value in values}
+    missing = [value for value in class_values if value not in evidence_values]
+    if missing:
+        raise ValueError(f"evidence must include every classes value; missing {missing}.")
+    return class_map, evidence_map
 
 
-def make_balanced_trial_bins(
+def validate_generalization(
+    classes: dict[str, list[object]],
+    generalization: Mapping[str, Sequence[object]] | None,
+) -> dict[str, list[object]] | None:
+    """Validate independent temporal-generalization conditions."""
+
+    if generalization is None:
+        return None
+    generalization_map = _validate_mapping("generalization", generalization, minimum=1)
+    unknown = [label for label in generalization_map if label not in classes]
+    if unknown:
+        raise ValueError(f"generalization keys must be classifier classes; unknown {unknown}.")
+    return generalization_map
+
+
+def select_trials(
+    metadata: pd.DataFrame,
+    *,
+    target: str,
+    classes: dict[str, list[object]],
+    evidence: dict[str, list[object]],
+    generalization: dict[str, list[object]] | None,
+    qc: str | None,
+    keep: Sequence[object],
+    exclude: Mapping[str, Sequence[object] | str],
+) -> tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Select analysis trials and return their independent decoding labels."""
+
+    metadata = _drop_redundant_subject(metadata)
+    if target not in metadata.columns:
+        raise ValueError(f"target column {target!r} is missing after transform_metadata.")
+    collisions = sorted(RESERVED_TRIAL_COLUMNS.intersection(metadata.columns))
+    if collisions:
+        raise ValueError(f"Metadata uses reserved decoding columns: {collisions}.")
+    mask = np.ones(len(metadata), dtype=bool)
+    if qc is not None:
+        if qc not in metadata.columns:
+            raise ValueError(f"QC column {qc!r} is missing; label artifacts or set qc=None.")
+        mask &= metadata[qc].isin(tuple(keep)).to_numpy()
+    for column, rule in exclude.items():
+        if column not in metadata.columns:
+            raise ValueError(f"Trial exclusion column {column!r} is missing.")
+        if rule == "notna":
+            mask &= metadata[column].isna().to_numpy()
+        else:
+            mask &= ~metadata[column].isin(tuple(rule)).to_numpy()
+
+    values = metadata[target].to_numpy(dtype=object)
+    class_labels = _map_values(values, classes)
+    evidence_labels = _map_values(values, evidence)
+    generalization_labels = (
+        np.full(len(values), None, dtype=object)
+        if generalization is None
+        else _map_values(values, generalization)
+    )
+    mask &= pd.notna(evidence_labels) | pd.notna(generalization_labels)
+    if not np.any(mask):
+        raise ValueError("No trials remain after selection and decoding mappings.")
+
+    selected = metadata.loc[mask].reset_index(drop=True).copy()
+    class_labels = class_labels[mask]
+    evidence_labels = evidence_labels[mask]
+    generalization_labels = generalization_labels[mask]
+    original_rows = np.flatnonzero(mask)
+    return selected, class_labels, evidence_labels, generalization_labels, original_rows
+
+
+def _drop_redundant_subject(metadata: pd.DataFrame) -> pd.DataFrame:
+    """Remove a behavior-level subject alias when it repeats subject_index."""
+
+    if "subject" not in metadata.columns:
+        return metadata
+    subject = metadata["subject"].astype("string").str.strip()
+    subject_index = metadata["subject_index"].astype("string").str.strip()
+    same = subject.eq(subject_index).all()
+    if not same:
+        subject_number = pd.to_numeric(subject, errors="coerce")
+        index_number = pd.to_numeric(subject_index, errors="coerce")
+        same = subject_number.notna().all() and index_number.notna().all()
+        same = same and np.array_equal(subject_number, index_number)
+    if same:
+        return metadata.drop(columns="subject")
+    return metadata
+
+
+def sample_balanced(
+    labels: np.ndarray,
+    class_order: Sequence[str],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Sample the same number of single trials from every class."""
+
+    counts = {label: int(np.sum(labels == label)) for label in class_order}
+    if any(count == 0 for count in counts.values()):
+        raise ValueError(f"Every class needs at least one trial; counts were {counts}.")
+    size = min(counts.values())
+    chosen = [
+        rng.choice(np.flatnonzero(labels == label), size=size, replace=False)
+        for label in class_order
+    ]
+    return rng.permutation(np.concatenate(chosen))
+
+
+def average_training_trials(
     data: np.ndarray,
     labels: np.ndarray,
-    trial_bin_size: int,
+    *,
+    class_order: Sequence[str],
+    size: int,
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Balance conditions and average trials into bins."""
+    """Rebalance and average only the training fold into pseudotrials."""
 
-    unique_labels = np.unique(labels)
-    counts = {label: int(np.sum(labels == label)) for label in unique_labels}
-    min_count = min(counts.values())
-
-    if min_count < trial_bin_size:
+    counts = {label: int(np.sum(labels == label)) for label in class_order}
+    usable = min(counts.values())
+    usable -= usable % size
+    if usable == 0:
         raise ValueError(
-            "At least one condition has fewer trials than trial_bin_size. "
-            f"Counts were: {counts}"
+            f"No complete training averages can be formed with trial_averaging={size}; "
+            f"fold counts were {counts}."
         )
-
-    usable_trials_per_label = min_count - (min_count % trial_bin_size)
-    if usable_trials_per_label == 0:
-        raise ValueError(
-            "No complete trial bins can be formed. "
-            f"Counts were: {counts}, trial_bin_size={trial_bin_size}"
-        )
-
-    binned_blocks = []
-    binned_labels = []
-    for label in unique_labels:
-        label_idx = np.where(labels == label)[0]
-        chosen_idx = rng.choice(label_idx, size=usable_trials_per_label, replace=False)
-        shuffled_idx = rng.permutation(chosen_idx)
-        label_data = data[shuffled_idx]
-
-        if trial_bin_size == 1:
-            bins = label_data
-        else:
-            n_bins = usable_trials_per_label // trial_bin_size
-            bins = label_data.reshape(n_bins, trial_bin_size, data.shape[1], data.shape[2]).mean(axis=1)
-
-        binned_blocks.append(bins)
-        binned_labels.extend([label] * len(bins))
-
-    binned_data = np.concatenate(binned_blocks, axis=0)
-    binned_labels = np.asarray(binned_labels, dtype=object)
-
-    order = rng.permutation(len(binned_labels))
-    return binned_data[order], binned_labels[order]
+    blocks = []
+    output_labels: list[str] = []
+    for label in class_order:
+        indices = rng.permutation(np.flatnonzero(labels == label))[:usable]
+        block = data[indices]
+        if size > 1:
+            block = block.reshape(usable // size, size, *data.shape[1:]).mean(axis=1)
+        blocks.append(block)
+        output_labels.extend([label] * len(block))
+    output = np.concatenate(blocks)
+    order = rng.permutation(len(output))
+    return output[order], np.asarray(output_labels, dtype=object)[order]
 
 
-def apply_exclusion_rule(column: pd.Series, rule: tuple | str) -> np.ndarray:
-    """Apply one metadata exclusion rule."""
-
-    keep_mask = np.ones(len(column), dtype=bool)
-
-    if rule == "notna":
-        excluded_values = ()
-        exclude_non_missing = True
-    else:
-        excluded_values = tuple(rule)
-        exclude_non_missing = False
-
-    if len(excluded_values) > 0:
-        keep_mask &= ~column.isin(excluded_values).to_numpy()
-
-    if exclude_non_missing:
-        keep_mask &= column.isna().to_numpy()
-
-    return keep_mask
-
-
-def sample_balanced_indices(labels: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Sample the same number of trials from each class."""
-
-    unique_labels, counts = np.unique(labels, return_counts=True)
-    min_count = counts.min()
-    sampled = []
-    for label in unique_labels:
-        label_idx = np.where(labels == label)[0]
-        sampled.extend(rng.choice(label_idx, size=min_count, replace=False))
-    sampled = np.asarray(sampled, dtype=int)
-    return rng.permutation(sampled)
+def _validate_mapping(
+    name: str,
+    mapping: Mapping[str, Sequence[object]],
+    *,
+    minimum: int,
+) -> dict[str, list[object]]:
+    if not isinstance(mapping, Mapping) or len(mapping) < minimum:
+        raise ValueError(f"{name} must contain at least {minimum} named groups.")
+    output: dict[str, list[object]] = {}
+    seen: list[object] = []
+    for label, raw_values in mapping.items():
+        if not isinstance(label, str) or label.strip() == "":
+            raise ValueError(f"{name} labels must be non-empty strings.")
+        if isinstance(raw_values, (str, bytes)) or not isinstance(raw_values, Sequence):
+            raise TypeError(f"{name}[{label!r}] must be a non-string sequence.")
+        values = list(raw_values)
+        if not values:
+            raise ValueError(f"{name}[{label!r}] cannot be empty.")
+        overlap = [
+            value
+            for index, value in enumerate(values)
+            if value in seen or value in values[:index]
+        ]
+        if overlap:
+            raise ValueError(f"{name} values must map to one group; duplicated {overlap}.")
+        output[label] = values
+        seen.extend(values)
+    return output
 
 
-def training_row_mask(labels: np.ndarray, label_order: list[str]) -> np.ndarray:
-    """Return rows that belong to the configured training labels."""
-
-    return np.isin(labels, label_order)
-
-
-def channels_to_drop(epochs: mne.Epochs, cfg: DecodingConfig) -> list[str]:
-    """Return channels that should be removed before decoding.
-
-    This wrapper keeps the decoding API stable while using the shared helper.
-    """
-
-    return channels_to_drop_by_rule(epochs, cfg.decode)
+def _map_values(values: np.ndarray, mapping: dict[str, list[object]]) -> np.ndarray:
+    labels = np.full(len(values), None, dtype=object)
+    for label, raw_values in mapping.items():
+        labels[np.isin(values, raw_values)] = label
+    return labels

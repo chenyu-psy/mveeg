@@ -265,6 +265,63 @@ tables = run_regression_model(
 )
 ```
 
+## Decoding
+
+Open a prepared dataset, register the analysis choices, and let `decode()`
+write the public DuckDB tables. Classifier and CV setup are optional; their
+defaults are logistic regression and 5-fold CV with 20 repeats.
+
+```python
+from mveeg.prep import open_pipeline
+
+pipeline = open_pipeline("data/preprocessed")
+pipeline.select_trials(
+    qc="final_status",
+    keep=["accepted"],
+    exclude={"behavior_status": ["incorrect"]},
+)
+pipeline.prepare_epochs(crop=(-0.2, 0.8), time_bin=50)
+pipeline.setup_classifier(
+    classifier="logistic_regression",
+    solver="lbfgs",
+    max_iter=1000,
+)
+pipeline.setup_cv(
+    folds=5,
+    repeats=20,
+    trial_averaging=5,
+    permutations=0,
+    seed=None,
+)
+pipeline.decode(
+    target="condition",
+    classes={"low": ["SS2"], "high": ["SS4"]},
+    evidence=None,
+    generalization={
+        "low": ["SS2", "probe_low"],
+        "high": ["SS4", "probe_high"],
+    },
+    output="mean",
+    file="results/decoding.duckdb",
+    recompute="never",
+    n_jobs=6,
+    progress=True,
+)
+```
+
+`classes`, `evidence`, and `generalization` all map labels to raw target values.
+`classes` must define at least two labels. An explicit `evidence` mapping may
+add output groups evaluated by every fold model but not used for training.
+Generalization keys must reuse labels from `classes`, while their raw conditions
+remain independent of both training membership and evidence output. The same raw
+condition may therefore have different training and generalization labels when
+the scientific roles differ. Use `None` to skip generalization.
+Subjects run one at a time; `n_jobs` controls parallel CV repeats within the
+active subject, and each computed subject gets
+one repeat-level progress bar. Query the documented DuckDB tables directly;
+`decode()` returns `None`. See [Decoding API and result contract](docs/decoding.md)
+for the CV, evidence, pattern, permutation, and schema definitions.
+
 ## Development
 
 ```bash

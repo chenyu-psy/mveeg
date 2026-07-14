@@ -16,6 +16,7 @@ dependencies = [
     "duckdb",
     "scipy",
     "scikit-learn",
+    "joblib>=1.4",
     "mne",
     "mne-bids",
     "autoreject",
