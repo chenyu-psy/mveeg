@@ -18,6 +18,7 @@ import mne
 import numpy as np
 import pandas as pd
 
+from .._shared.fingerprints import fingerprint, fingerprint_files, jsonable as _jsonable
 from .._shared.metadata import validate_metadata_mirror
 from .gaze import normalize_gaze_geometry
 
@@ -75,9 +76,6 @@ class DatasetPipeline:
             raise ValueError("Manifest and provenance disagree on task or processing stage.")
         if description.get("Task") != self.task or description.get("Stage") != self.stage:
             raise ValueError("Manifest and dataset_description disagree on task or processing stage.")
-        from ..decoding.pipeline import initialize_analysis_state
-
-        initialize_analysis_state(self)
 
     @property
     def manifest(self) -> pd.DataFrame:
@@ -252,121 +250,6 @@ class DatasetPipeline:
             time_window=time_window,
             hide_channels=hide_channels,
             scalings=scalings,
-        )
-
-    def transform_metadata(
-        self,
-        transform,
-        *,
-        name: str,
-        version: str,
-    ) -> DatasetPipeline:
-        """Register a row-preserving transform for later model analyses."""
-
-        from ..decoding.pipeline import set_metadata_transform
-
-        set_metadata_transform(self, transform, name=name, version=version)
-        return self
-
-    def select_trials(
-        self,
-        *,
-        qc: str | None = "final_status",
-        keep: Sequence[object] = ("accepted",),
-        exclude: Mapping[str, Sequence[object] | str] | None = None,
-    ) -> DatasetPipeline:
-        """Register trial quality and metadata exclusions for models."""
-
-        from ..decoding.pipeline import set_trial_selection
-
-        set_trial_selection(self, qc=qc, keep=keep, exclude=exclude)
-        return self
-
-    def prepare_epochs(
-        self,
-        *,
-        crop: tuple[float, float] | None = (0.0, 0.8),
-        time_bin: int = 50,
-        drop_channel_types: Sequence[str] = ("eog", "eyegaze", "pupil", "misc"),
-        drop_channels: Sequence[str] = (),
-    ) -> DatasetPipeline:
-        """Register epoch cropping, time bins, and analysis channels."""
-
-        from ..decoding.pipeline import set_epoch_preparation
-
-        set_epoch_preparation(
-            self,
-            crop=crop,
-            time_bin=time_bin,
-            drop_channel_types=drop_channel_types,
-            drop_channels=drop_channels,
-        )
-        return self
-
-    def setup_classifier(
-        self,
-        *,
-        classifier: str = "logistic_regression",
-        **parameters,
-    ) -> DatasetPipeline:
-        """Select a built-in linear classifier without fitting it yet."""
-
-        from ..decoding.pipeline import set_classifier
-
-        set_classifier(self, classifier=classifier, parameters=parameters)
-        return self
-
-    def setup_cv(
-        self,
-        *,
-        folds: int = 5,
-        repeats: int = 20,
-        trial_averaging: int = 5,
-        permutations: int = 0,
-        seed: int | None = None,
-    ) -> DatasetPipeline:
-        """Configure repeated stratified cross-validation."""
-
-        from ..decoding.pipeline import set_cv
-
-        set_cv(
-            self,
-            folds=folds,
-            repeats=repeats,
-            trial_averaging=trial_averaging,
-            permutations=permutations,
-            seed=seed,
-        )
-        return self
-
-    def decode(
-        self,
-        *,
-        target: str,
-        classes: Mapping[str, Sequence[object]],
-        evidence: Mapping[str, Sequence[object]] | None = None,
-        generalization: Mapping[str, Sequence[object]] | None = None,
-        output: str = "mean",
-        file: str | Path,
-        recompute: str = "never",
-        n_jobs: int = 1,
-        progress: bool = True,
-    ) -> None:
-        """Run decoding and write the documented DuckDB result tables."""
-
-        from ..decoding.pipeline import decode
-
-        return decode(
-            self,
-            target=target,
-            classes=classes,
-            evidence=evidence,
-            generalization=generalization,
-            output=output,
-            file=file,
-            recompute=recompute,
-            n_jobs=n_jobs,
-            progress=progress,
         )
 
     def _subject_row(self, subject_index: str | int) -> pd.Series:
@@ -644,28 +527,6 @@ class DatasetBuilder:
         return self._stage_root
 
 
-def fingerprint(value: object) -> str:
-    """Return a stable SHA-256 fingerprint for JSON-like configuration."""
-    payload = json.dumps(_jsonable(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return sha256(payload.encode("utf-8")).hexdigest()
-
-
-def fingerprint_files(paths: Sequence[str | Path], *, root: str | Path) -> str:
-    """Fingerprint file identity, size, and modification time relative to a root."""
-    base = Path(root).resolve()
-    records = []
-    for raw_path in sorted(Path(path).resolve() for path in paths):
-        stat = raw_path.stat()
-        records.append(
-            {
-                "path": raw_path.relative_to(base).as_posix(),
-                "size": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
-            }
-        )
-    return fingerprint(records)
-
-
 def fingerprint_epochs(epochs: mne.Epochs) -> str:
     """Fingerprint in-memory epochs, events, metadata, timing, and signal values."""
     digest = sha256()
@@ -894,27 +755,6 @@ def _read_json(path: Path, *, missing_ok: bool = False) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"Expected a JSON object in {path}.")
     return value
-
-
-def _jsonable(value: object) -> object:
-    """Convert common analysis objects to stable JSON-compatible values."""
-    if isinstance(value, Path):
-        return value.as_posix()
-    if isinstance(value, Mapping):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, set):
-        return [_jsonable(item) for item in sorted(value, key=repr)]
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    if callable(value):
-        return f"{getattr(value, '__module__', '')}.{getattr(value, '__qualname__', repr(value))}"
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return repr(value)
 
 
 def _mveeg_version() -> str:

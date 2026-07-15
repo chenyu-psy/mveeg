@@ -267,14 +267,15 @@ tables = run_regression_model(
 
 ## Decoding
 
-Open a prepared dataset, register the analysis choices, and let `decode()`
-write the public DuckDB tables. Classifier and CV setup are optional; their
-defaults are logistic regression and 5-fold CV with 20 repeats.
+Initialize decoding from a prepared dataset root, register the analysis
+choices, and let `decode()` write the public DuckDB tables. Classifier and CV
+setup are optional; their defaults are logistic regression and 5-fold CV with
+20 repeats.
 
 ```python
-from mveeg.prep import open_pipeline
+from mveeg import decoding
 
-pipeline = open_pipeline("data/preprocessed")
+pipeline = decoding.init_pipeline("data/preprocessed")
 pipeline.select_trials(
     qc="final_status",
     keep=["accepted"],

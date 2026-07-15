@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+import json
 from numbers import Number
 from pathlib import Path, PurePosixPath
 
@@ -59,6 +60,61 @@ def transform_metadata(
     return output.reset_index(drop=True)
 
 
+def assign_metadata_variables(
+    metadata: pd.DataFrame,
+    variables: Mapping[str, Callable[[pd.DataFrame], object]],
+) -> pd.DataFrame:
+    """Create analysis variables from ordered DataFrame-to-column functions.
+
+    Each function receives the current metadata table and returns one scalar or
+    one trial-aligned column. Variables are evaluated in mapping order, so a
+    later function may use variables created earlier in the same call.
+    """
+
+    if not isinstance(metadata, pd.DataFrame):
+        raise TypeError("metadata must be a pandas DataFrame.")
+    if not isinstance(variables, Mapping):
+        raise TypeError("variables must be a mapping from column names to callables.")
+    _validate_identity(metadata, context="metadata")
+
+    output = metadata.copy().reset_index(drop=True)
+    identity = output.loc[:, IDENTITY_COLUMNS].copy()
+    for name, function in variables.items():
+        if not isinstance(name, str) or name.strip() == "":
+            raise ValueError("Metadata variable names must be non-empty strings.")
+        if name in IDENTITY_COLUMNS:
+            raise ValueError(
+                "transform_metadata cannot replace subject_index or epoch_index."
+            )
+        if not callable(function):
+            raise TypeError(f"Metadata variable {name!r} must be defined by a callable.")
+
+        value = function(output.copy())
+        if isinstance(value, pd.DataFrame):
+            raise TypeError(
+                f"Metadata variable {name!r} must return one column, not a DataFrame."
+            )
+        if not np.isscalar(value):
+            try:
+                value_length = len(value)
+            except TypeError as error:
+                raise TypeError(
+                    f"Metadata variable {name!r} must return a scalar or one column."
+                ) from error
+            if value_length != len(output):
+                raise ValueError(
+                    f"Metadata variable {name!r} returned {value_length} values for "
+                    f"{len(output)} trials."
+                )
+        output[name] = value
+
+    if not output.loc[:, IDENTITY_COLUMNS].equals(identity):
+        raise ValueError(
+            "transform_metadata must preserve subject_index and epoch_index values and order."
+        )
+    return output
+
+
 def metadata_transform_spec(
     metadata_transform: Callable[[pd.DataFrame], pd.DataFrame] | None,
     *,
@@ -110,6 +166,32 @@ def load_dataset_manifest(dataset_root: str | Path) -> pd.DataFrame:
     return manifest.reset_index(drop=True)
 
 
+def load_validated_dataset_manifest(dataset_root: str | Path) -> pd.DataFrame:
+    """Read a complete mveeg dataset contract without loading signal data."""
+
+    root = Path(dataset_root).expanduser().resolve()
+    manifest = load_dataset_manifest(root)
+    if len(manifest) == 0:
+        raise ValueError(f"Dataset manifest is empty: {root / 'manifest.tsv'}.")
+    required = {"input_fingerprint", "pipeline_fingerprint"}
+    missing = sorted(required.difference(manifest.columns))
+    if missing:
+        raise ValueError(f"manifest.tsv is missing required columns: {missing}")
+
+    task = _single_manifest_value(manifest, "task")
+    stage = _single_manifest_value(manifest, "stage")
+    pipeline_fingerprint = _single_manifest_value(manifest, "pipeline_fingerprint")
+    provenance = _read_json_object(root / "provenance.json")
+    description = _read_json_object(root / "dataset_description.json")
+    if provenance.get("pipeline_fingerprint") != pipeline_fingerprint:
+        raise ValueError("Manifest and provenance contain different pipeline fingerprints.")
+    if provenance.get("task") != task or provenance.get("stage") != stage:
+        raise ValueError("Manifest and provenance disagree on task or processing stage.")
+    if description.get("Task") != task or description.get("Stage") != stage:
+        raise ValueError("Manifest and dataset_description disagree on task or processing stage.")
+    return manifest
+
+
 def list_dataset_subjects(dataset_root: str | Path) -> list[str]:
     """Return subject indices in manifest order."""
 
@@ -155,40 +237,65 @@ def load_subject_epochs_and_metadata(
     subject = _normalize_subject_index(subject_index)
     paths = subject_dataset_paths(dataset_root, subject)
     epochs_path = _required_file(paths["epochs_path"], "epochs")
-    events_path = _required_file(paths["events_path"], "events")
     epochs = mne.read_epochs(epochs_path, preload=preload, verbose="ERROR")
+    base_metadata = _load_subject_events(paths, subject)
+    if len(base_metadata) != len(epochs):
+        raise ValueError(
+            f"events.tsv has {len(base_metadata)} rows but the epochs file has {len(epochs)} epochs "
+            f"for subject_index '{subject}'."
+        )
+    if epochs.metadata is None:
+        raise ValueError(f"Epochs file has no identity metadata: {epochs_path}")
+    fif_metadata = _normalize_identity(epochs.metadata, context="epochs metadata")
+    _validate_metadata_mirror(fif_metadata, base_metadata)
+    with mne.use_log_level("ERROR"):
+        epochs.metadata = base_metadata
+
+    return epochs, _merge_subject_artifacts(base_metadata, paths)
+
+
+def load_subject_metadata(
+    dataset_root: str | Path,
+    subject_index: str | int,
+) -> pd.DataFrame:
+    """Load QC-merged subject metadata without opening the epochs file."""
+
+    subject = _normalize_subject_index(subject_index)
+    paths = subject_dataset_paths(dataset_root, subject)
+    metadata = _load_subject_events(paths, subject)
+    return _merge_subject_artifacts(metadata, paths)
+
+
+def _load_subject_events(paths: dict[str, Path | None], subject: str) -> pd.DataFrame:
+    events_path = _required_file(paths["events_path"], "events")
     metadata = pd.read_csv(
         events_path,
         sep="\t",
         dtype={"subject_index": "string"},
     )
     metadata = _normalize_identity(metadata, context="events.tsv")
-    if len(metadata) != len(epochs):
-        raise ValueError(
-            f"events.tsv has {len(metadata)} rows but the epochs file has {len(epochs)} epochs "
-            f"for subject_index '{subject}'."
-        )
     if set(metadata["subject_index"]) != {subject}:
         raise ValueError(
             f"events.tsv contains subject_index values other than '{subject}'."
         )
-    if epochs.metadata is None:
-        raise ValueError(f"Epochs file has no identity metadata: {epochs_path}")
-    fif_metadata = _normalize_identity(epochs.metadata, context="epochs metadata")
-    _validate_metadata_mirror(fif_metadata, metadata)
-    with mne.use_log_level("ERROR"):
-        epochs.metadata = metadata
+    return metadata
 
+
+def _merge_subject_artifacts(
+    metadata: pd.DataFrame,
+    paths: dict[str, Path | None],
+) -> pd.DataFrame:
     artifacts_path = paths["artifacts_path"]
-    if artifacts_path is not None:
-        artifacts = pd.read_csv(
-            _required_file(artifacts_path, "artifacts"),
-            sep="\t",
-            dtype={"subject_index": "string"},
-        )
-        artifacts = _normalize_identity(artifacts, context="artifacts.tsv")
-        metadata = _merge_artifact_metadata(metadata, artifacts)
-    return epochs, metadata
+    if artifacts_path is None:
+        return metadata
+
+    artifacts = pd.read_csv(
+        _required_file(artifacts_path, "artifacts"),
+        sep="\t",
+        dtype={"subject_index": "string"},
+    )
+    artifacts = _normalize_identity(artifacts, context="artifacts.tsv")
+    return _merge_artifact_metadata(metadata, artifacts)
 
 
 def validate_metadata_mirror(
@@ -348,6 +455,23 @@ def _merge_artifact_metadata(
     if not observed.equals(expected):
         raise ValueError("Artifact merge changed trial order.")
     return merged
+
+
+def _single_manifest_value(manifest: pd.DataFrame, column: str) -> str:
+    values = manifest[column].drop_duplicates().tolist()
+    if len(values) != 1:
+        raise ValueError(f"Dataset manifest must contain exactly one {column} value.")
+    return str(values[0])
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with path.open("r") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected a JSON object in {path}.")
+    return value
 
 
 def _normalize_identity(metadata: pd.DataFrame, *, context: str) -> pd.DataFrame:

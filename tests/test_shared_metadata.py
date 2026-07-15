@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from mveeg._shared.metadata import (
+    assign_metadata_variables,
     load_subject_data_with_filters,
     load_subject_epochs_and_metadata,
     metadata_transform_spec,
@@ -33,6 +34,39 @@ def test_transform_metadata_preserves_trial_identity():
 
     assert output["double"].tolist() == [4, 8]
     assert "double" not in metadata.columns
+
+
+def test_assign_metadata_variables_builds_columns_in_order():
+    metadata = pd.DataFrame(
+        {
+            "subject_index": ["001", "001"],
+            "epoch_index": [0, 1],
+            "value": [2, 4],
+        }
+    )
+
+    output = assign_metadata_variables(
+        metadata,
+        {
+            "double": lambda frame: frame["value"] * 2,
+            "centered": lambda frame: frame["double"] - frame["double"].mean(),
+        },
+    )
+
+    assert output["double"].tolist() == [4, 8]
+    assert output["centered"].tolist() == [-2.0, 2.0]
+    assert list(metadata.columns) == ["subject_index", "epoch_index", "value"]
+
+
+def test_assign_metadata_variables_requires_one_trial_aligned_column():
+    metadata = pd.DataFrame(
+        {"subject_index": ["001", "001"], "epoch_index": [0, 1]}
+    )
+
+    with pytest.raises(ValueError, match="returned 1 values for 2 trials"):
+        assign_metadata_variables(metadata, {"bad": lambda frame: [1]})
+    with pytest.raises(TypeError, match="not a DataFrame"):
+        assign_metadata_variables(metadata, {"bad": lambda frame: frame[["epoch_index"]]})
 
 
 @pytest.mark.parametrize(

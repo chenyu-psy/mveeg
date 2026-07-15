@@ -1,7 +1,5 @@
-"""Multiclass EEG decoding used through ``prep.open_pipeline()``.
+"""Independent pipeline for multiclass EEG decoding."""
 
-The public workflow lives on :class:`mveeg.prep.DatasetPipeline`; this
-subpackage contains decoding-specific scientific implementation only.
-"""
+from .pipeline import DecodingPipeline, init_pipeline
 
-__all__: list[str] = []
+__all__ = ["DecodingPipeline", "init_pipeline"]

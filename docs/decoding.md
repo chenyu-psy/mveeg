@@ -1,17 +1,21 @@
 # Decoding API and result contract
 
-The decoding API operates on a manifest-backed dataset opened with
-`mveeg.prep.open_pipeline()`. Configuration is lazy: the setup methods record
-an analysis, and `decode()` loads subjects, fits models, and writes one DuckDB
-file. The terminal method returns `None`.
+The decoding API has its own pipeline initialized from a manifest-backed
+dataset root. Configuration is lazy: initialization validates the dataset
+without loading signal data, the setup methods record an analysis, and
+`decode()` refreshes the manifest, loads subjects, fits models, and writes one
+DuckDB file. The terminal method returns `None`.
 
 ## Lifecycle
 
 ```python
-from mveeg.prep import open_pipeline
+from mveeg import decoding
 
-pipeline = open_pipeline("data/preprocessed")
-pipeline.transform_metadata(add_analysis_columns, name="analysis_columns", version="1")
+pipeline = decoding.init_pipeline("data/preprocessed")
+pipeline.transform_metadata(
+    condition=lambda x: x["raw_condition"].map(condition_map),
+    load=lambda x: x["set_size"].astype(float),
+)
 pipeline.select_trials(qc="final_status", keep=["accepted"], exclude={})
 pipeline.prepare_epochs(crop=(-0.2, 0.8), time_bin=50)
 pipeline.setup_classifier(classifier="logistic_regression", solver="lbfgs", max_iter=1000)
@@ -53,6 +57,13 @@ training label may differ because the two mappings describe different
 scientific roles. Combine raw conditions with `transform_metadata()` before
 decoding when they should form one scientific condition. Boolean values and an
 implicit "all" mode are not accepted.
+
+`transform_metadata()` accepts only named variable definitions. Each value is
+a function that receives the current metadata DataFrame and returns one scalar
+or one trial-aligned column. Variables run in written order, so later variables
+may use columns created earlier in the same call. The transform cannot replace
+`subject_index` or `epoch_index`. mveeg fingerprints the resulting variable
+values per subject; callers do not provide transform names or versions.
 
 `trials.subject` is the canonical `subject_index`. A metadata column named
 `subject` is omitted only when it contains the same identities; a conflicting

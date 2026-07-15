@@ -80,6 +80,11 @@ requested. It does not infer an active or latest stage. Prepared and
 preprocessed data use separate roots, and later analyses must name the root
 they intend to use.
 
+The returned `DatasetPipeline` remains a prep and dataset-management handle.
+Decoding does not attach model state or methods to it; instead,
+`decoding.init_pipeline(root)` validates and consumes the same stored dataset
+contract through an independent analysis pipeline.
+
 Gaze geometry configured on a raw or external pipeline is stored in dataset
 provenance when build succeeds. It may also be added atomically to an existing
 prepared dataset with `DatasetPipeline.configure_gaze()`. Reopening that root

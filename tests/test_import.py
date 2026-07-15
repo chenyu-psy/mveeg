@@ -59,7 +59,9 @@ def test_decoding_public_api_has_no_legacy_facade():
         "setup_cv",
         "decode",
     }
-    assert pipeline_methods.issubset(set(dir(mveeg.prep.DatasetPipeline)))
+    assert {"DecodingPipeline", "init_pipeline"} == set(mveeg.decoding.__all__)
+    assert pipeline_methods.issubset(set(dir(mveeg.decoding.DecodingPipeline)))
+    assert pipeline_methods.isdisjoint(set(dir(mveeg.prep.DatasetPipeline)))
     for module in (
         "config",
         "io",

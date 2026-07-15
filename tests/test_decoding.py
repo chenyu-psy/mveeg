@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import duckdb
+import json
 import mne
 import numpy as np
 import pandas as pd
 import pytest
 
 import mveeg.decoding.analysis as decoding_analysis
+from mveeg.decoding import DecodingPipeline, init_pipeline
 from mveeg.decoding.analysis import decode_subject
 from mveeg.decoding.prepare import (
     average_training_trials,
@@ -515,10 +517,128 @@ def test_permutations_keep_generalization_targets_fixed(monkeypatch):
         np.testing.assert_array_equal(actual_labels, generalization_labels)
 
 
+def test_pipeline_init_is_lazy_chained_and_does_not_accept_prep_handles(
+    tmp_path,
+    monkeypatch,
+):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+
+    def fail_read(*args, **kwargs):
+        raise AssertionError("init_pipeline must not load epochs")
+
+    monkeypatch.setattr(mne, "read_epochs", fail_read)
+    pipeline = init_pipeline(dataset)
+
+    assert isinstance(pipeline, DecodingPipeline)
+    assert pipeline.subject_indices == ("001",)
+    assert pipeline.transform_metadata(
+        condition_upper=lambda frame: frame["condition"].str.upper()
+    ) is pipeline
+    assert pipeline.select_trials(qc=None) is pipeline
+    assert pipeline.prepare_epochs(crop=None) is pipeline
+    assert pipeline.setup_classifier() is pipeline
+    assert pipeline.setup_cv() is pipeline
+    with pytest.raises(TypeError):
+        init_pipeline(open_pipeline(dataset))
+
+
+def test_pipeline_transform_metadata_builds_ordered_trial_variables(tmp_path):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    result_file = tmp_path / "decoding.duckdb"
+    pipeline = init_pipeline(dataset)
+    pipeline.transform_metadata(
+        condition_upper=lambda frame: frame["condition"].str.upper(),
+        is_a=lambda frame: frame["condition_upper"].eq("A"),
+    )
+    pipeline.prepare_epochs(crop=None, time_bin=50)
+    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
+    pipeline.decode(
+        target="condition_upper",
+        classes={"A": ["A"], "B": ["B"], "C": ["C"]},
+        file=result_file,
+        progress=False,
+    )
+
+    with duckdb.connect(str(result_file), read_only=True) as connection:
+        trials = connection.execute(
+            "SELECT condition, condition_upper, is_a FROM trials ORDER BY trial"
+        ).df()
+        config = json.loads(
+            connection.execute("SELECT config::VARCHAR FROM analysis").fetchone()[0]
+        )
+
+    assert trials["condition_upper"].tolist() == [
+        value.upper() for value in trials["condition"]
+    ]
+    assert trials["is_a"].tolist() == trials["condition_upper"].eq("A").tolist()
+    assert config["metadata_variables"] == ["condition_upper", "is_a"]
+
+
+def test_pipeline_metadata_variable_values_enter_subject_fingerprint(tmp_path):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    result_file = tmp_path / "decoding.duckdb"
+
+    first = init_pipeline(dataset).transform_metadata(
+        model_condition=lambda frame: frame["condition"]
+    )
+    first.prepare_epochs(crop=None, time_bin=50)
+    first.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
+    first.decode(
+        target="model_condition",
+        classes={"a": ["a"], "b": ["b"], "c": ["c"]},
+        file=result_file,
+        progress=False,
+    )
+    with duckdb.connect(str(result_file), read_only=True) as connection:
+        first_fingerprint = connection.execute(
+            "SELECT fingerprint FROM subjects WHERE subject='001'"
+        ).fetchone()[0]
+
+    changed = init_pipeline(dataset).transform_metadata(
+        model_condition=lambda frame: frame["condition"].replace({"a": "b", "b": "a"})
+    )
+    changed.prepare_epochs(crop=None, time_bin=50)
+    changed.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
+    changed.decode(
+        target="model_condition",
+        classes={"a": ["a"], "b": ["b"], "c": ["c"]},
+        file=result_file,
+        recompute="changed",
+        progress=False,
+    )
+    with duckdb.connect(str(result_file), read_only=True) as connection:
+        second_fingerprint = connection.execute(
+            "SELECT fingerprint FROM subjects WHERE subject='001'"
+        ).fetchone()[0]
+
+    assert second_fingerprint != first_fingerprint
+
+
+def test_pipeline_transform_metadata_rejects_invalid_variable_definitions(tmp_path):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    pipeline = init_pipeline(dataset)
+
+    with pytest.raises(TypeError, match="must be defined by a callable"):
+        pipeline.transform_metadata(load=1)
+    with pytest.raises(ValueError, match="cannot replace subject_index"):
+        pipeline.transform_metadata(subject_index=lambda frame: frame["subject_index"])
+
+
+def test_pipeline_init_rejects_inconsistent_dataset_identity(tmp_path):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    path = dataset / "provenance.json"
+    provenance = json.loads(path.read_text())
+    provenance["task"] = "different"
+    path.write_text(json.dumps(provenance))
+
+    with pytest.raises(ValueError, match="disagree on task or processing stage"):
+        init_pipeline(dataset)
+
+
 def test_pipeline_writes_public_duckdb_and_reuses_completed_subjects(tmp_path):
     dataset = _build_dataset(tmp_path / "dataset", ["001"])
     result_file = tmp_path / "decoding.duckdb"
-    pipeline = open_pipeline(dataset)
+    pipeline = init_pipeline(dataset)
     pipeline.prepare_epochs(crop=None, time_bin=50)
     pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, permutations=1, seed=4)
     assert pipeline.decode(
@@ -581,9 +701,6 @@ def test_pipeline_writes_public_duckdb_and_reuses_completed_subjects(tmp_path):
         ).df()
 
     _extend_dataset(dataset, "002")
-    pipeline = open_pipeline(dataset)
-    pipeline.prepare_epochs(crop=None, time_bin=50)
-    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, permutations=1, seed=4)
     pipeline.decode(
         target="condition",
         classes={"a": ["a"], "b": ["b"], "c": ["c"]},
@@ -614,7 +731,7 @@ def test_pipeline_shows_one_progress_bar_per_computed_subject(tmp_path, monkeypa
     monkeypatch.setattr("mveeg.decoding.analysis.tqdm", capture_tqdm)
     dataset = _build_dataset(tmp_path / "dataset", ["001", "002"])
     result_file = tmp_path / "decoding.duckdb"
-    pipeline = open_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
+    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
     pipeline.setup_cv(folds=2, repeats=2, trial_averaging=1, seed=4)
     pipeline.decode(
         target="condition",
@@ -651,7 +768,7 @@ def test_pipeline_shows_one_progress_bar_per_computed_subject(tmp_path, monkeypa
 def test_pipeline_rejects_config_change_without_full_recompute(tmp_path):
     dataset = _build_dataset(tmp_path / "dataset", ["001"])
     result_file = tmp_path / "decoding.duckdb"
-    pipeline = open_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
+    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
     pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
     pipeline.decode(
         target="condition",
@@ -691,7 +808,7 @@ def test_pipeline_rejects_config_change_without_full_recompute(tmp_path):
 def test_generated_seed_is_reused_and_changed_inputs_are_recomputed(tmp_path):
     dataset = _build_dataset(tmp_path / "dataset", ["001"])
     result_file = tmp_path / "decoding.duckdb"
-    pipeline = open_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
+    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
     pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=None)
     pipeline.decode(
         target="condition",
@@ -704,14 +821,14 @@ def test_generated_seed_is_reused_and_changed_inputs_are_recomputed(tmp_path):
             "SELECT fingerprint FROM subjects WHERE subject='001'"
         ).fetchone()[0]
 
-    pipeline = open_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
+    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
     pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=None)
     pipeline.decode(
         target="condition",
         classes={"a": ["a"], "b": ["b"], "c": ["c"]},
         file=result_file,
     )
-    eeg_json = pipeline.path_for_subject("001", "eeg_json")
+    eeg_json = open_pipeline(dataset).path_for_subject("001", "eeg_json")
     eeg_json.write_text(eeg_json.read_text() + "\n")
     pipeline.decode(
         target="condition",
@@ -732,7 +849,7 @@ def test_generated_seed_is_reused_and_changed_inputs_are_recomputed(tmp_path):
 def test_failed_subject_is_recorded_without_partial_results(tmp_path):
     dataset = _build_dataset(tmp_path / "dataset", ["001"])
     result_file = tmp_path / "decoding.duckdb"
-    pipeline = open_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
+    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
     pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=3)
 
     with pytest.raises(RuntimeError, match="No subject completed decoding"):
