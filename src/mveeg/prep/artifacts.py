@@ -6,13 +6,12 @@ separate fields so relabeling cannot silently overwrite reviewed decisions.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-import re
 
 import numpy as np
 import pandas as pd
-
 
 ARTIFACT_STATUSES = ("accepted", "review", "rejected")
 KEY_COLUMNS = ("subject_index", "epoch_index")
@@ -54,9 +53,7 @@ def _reason_codes(value: object) -> list[str]:
         if not code:
             continue
         if _REASON_PATTERN.fullmatch(code) is None:
-            raise ValueError(
-                f'Artifact reason "{code}" must be a stable snake_case code.'
-            )
+            raise ValueError(f'Artifact reason "{code}" must be a stable snake_case code.')
         codes.append(code)
     return codes
 
@@ -95,15 +92,12 @@ def _coerce_reason_matrix(
             mask = np.asarray(raw_mask)
             if mask.shape != (n_epochs, n_channels):
                 raise ValueError(
-                    f"{name}[{code!r}] has shape {mask.shape}; expected "
-                    f"({n_epochs}, {n_channels})."
+                    f"{name}[{code!r}] has shape {mask.shape}; expected ({n_epochs}, {n_channels})."
                 )
             if mask.dtype.kind != "b":
                 raise TypeError(f"{name}[{code!r}] must be a boolean mask.")
             for row, column in zip(*np.where(mask)):
-                normalized[row, column] = _join_reasons(
-                    normalized[row, column], validated_code[0]
-                )
+                normalized[row, column] = _join_reasons(normalized[row, column], validated_code[0])
         return normalized
 
     if isinstance(reasons, pd.DataFrame):
@@ -176,8 +170,6 @@ def _coerce_reviewed(series: pd.Series) -> pd.Series:
     mapping = {
         True: True,
         False: False,
-        1: True,
-        0: False,
         "true": True,
         "false": False,
         "True": True,
@@ -251,9 +243,8 @@ def validate_artifact_table(table: pd.DataFrame) -> pd.DataFrame:
         canonical[column] = canonical[column].astype(str)
 
     canonical["reviewed"] = _coerce_reviewed(canonical["reviewed"])
-    changed_without_review = (
-        ~canonical["reviewed"]
-        & canonical["final_status"].ne(canonical["initial_status"])
+    changed_without_review = ~canonical["reviewed"] & canonical["final_status"].ne(
+        canonical["initial_status"]
     )
     if changed_without_review.any():
         raise ValueError("Unreviewed epochs must have final_status == initial_status.")
@@ -359,9 +350,7 @@ def build_artifact_table(
         dtype=object,
     )
 
-    included_columns = np.array(
-        [channel not in ignored for channel in channel_names], dtype=bool
-    )
+    included_columns = np.array([channel not in ignored for channel in channel_names], dtype=bool)
     if included_columns.any():
         channel_rejected = pd.notna(rejected_matrix[:, included_columns]).any(axis=1)
         channel_review = pd.notna(review_matrix[:, included_columns]).any(axis=1)
@@ -372,9 +361,7 @@ def build_artifact_table(
     rejected = (
         channel_rejected
         if epoch_rejected is None
-        else _coerce_epoch_mask(
-            epoch_rejected, n_epochs=n_epochs, name="epoch_rejected"
-        )
+        else _coerce_epoch_mask(epoch_rejected, n_epochs=n_epochs, name="epoch_rejected")
     )
     review = (
         channel_review
@@ -389,8 +376,7 @@ def build_artifact_table(
     aggregated_reasons = []
     for row in range(n_epochs):
         included_reasons = [
-            combined_matrix[row, column]
-            for column in np.flatnonzero(included_columns)
+            combined_matrix[row, column] for column in np.flatnonzero(included_columns)
         ]
         aggregated_reasons.append(_join_reasons(explicit_reasons[row], *included_reasons))
 
@@ -417,15 +403,12 @@ def build_artifact_table(
     extra = previous_keys.difference(new_keys).tolist()
     if missing or extra:
         raise ValueError(
-            "Previous artifact keys must match exactly; "
-            f"missing={missing}, extra={extra}."
+            f"Previous artifact keys must match exactly; missing={missing}, extra={extra}."
         )
     previous_by_key = previous.set_index(list(KEY_COLUMNS)).reindex(new_keys)
     reviewed = previous_by_key["reviewed"].to_numpy(dtype=bool)
     table["reviewed"] = reviewed
-    table.loc[reviewed, "final_status"] = previous_by_key.loc[
-        reviewed, "final_status"
-    ].to_numpy()
+    table.loc[reviewed, "final_status"] = previous_by_key.loc[reviewed, "final_status"].to_numpy()
     return validate_artifact_table(table)
 
 

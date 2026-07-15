@@ -1,24 +1,15 @@
-# Raw preprocessing recipe
+# Raw-data preparation
 
-Use this path when continuous recordings and optional EyeLink/behavior files
-are organized under one folder per subject.
+`prep.init_pipeline()` creates a dataset-level lazy pipeline. Its methods
+register work; subject files are not read until `build_epochs()`.
 
 ```python
 from mveeg import prep
 
 pipeline = prep.init_pipeline("data/raw", subject_pattern="sub*")
-pipeline.load_eeg("*.vhdr")
+pipeline.load_eeg("*.vhdr", preload=False)
 pipeline.load_eyelink()
-pipeline.configure_gaze(
-    viewing_distance_cm=80,
-    screen_width_cm=53.2,
-    screen_width_px=1920,
-)
-pipeline.load_behavior(
-    "*_beh.csv",
-    include={"trial_type": ["exp", "pra"], "rejection": "no"},
-)
-
+pipeline.load_behavior("*_beh.csv", include={"rejection": "no"})
 pipeline.filter_eeg(l_freq=None, h_freq=80)
 pipeline.make_epochs(
     event_id=event_id,
@@ -29,120 +20,57 @@ pipeline.make_epochs(
 )
 pipeline.sync_eyelink()
 pipeline.align_behavior()
+pipeline.transform_metadata(
+    load=lambda frame: frame["set_size"].astype(float),
+)
 pipeline.select_epochs(include={"trial_type": "exp"})
-pipeline.drop_channels(["HEOG", "VEOG"])
-
 prepared = pipeline.build_epochs(
     "data/prepared",
     task="exp1",
-    recompute="never",
+    recompute="changed",
 )
 ```
 
-`load_eyelink()` discovers `.asc` and `.edf` files in each subject folder
-without a filename pattern. Existing ASC files are reused. When an EDF file
-has no matching ASC file, `build_epochs()` runs the SR Research `edf2asc`
-converter from `PATH` and keeps the generated ASC beside the EDF. Missing
-inputs, a missing converter, and failed conversions raise subject-specific
-errors before any EyeLink data are read.
+## Sources and events
 
-`load_behavior(include=...)` is the pre-alignment filter. `align_behavior()`
-requires exactly one behavior row per epoch and only attaches rows in their
-existing order. `select_epochs()` is the post-alignment selection and updates
-the epochs, events, and metadata together.
+`load_eeg()` accepts a file pattern plus keyword arguments for MNE's public
+`mne.io.read_raw()` dispatcher. It has no custom reader hook. Project-specific
+formats should be read by project code and passed through the external pipeline.
 
-`trial_sequences` is optional. Without it, `make_epochs()` uses simple event
-mode and creates one epoch for each matching `event_id` event. With it, each
-mapping key is the time-zero event by default and its value is the required
-ordered event sequence (or allowed alternative sequences). Use
-`time_zero=event_code` or a per-trial mapping only to override that default.
-Only valid sequences become epochs, and relative event timings are added to
-metadata. `sync_eyelink()` reuses this registered definition, so it takes no
-repeated epoch arguments.
+`load_eyelink()` discovers ASC and EDF files. MNE's public EyeLink reader is
+tried first. For the known signed-sample parser failure, mveeg uses a strict ASC
+fallback. Other MNE-reader failures issue a warning before fallback. EDF files
+without an ASC counterpart require the SR Research `edf2asc` executable.
 
-All optional steps may be skipped when their input is absent. For reusable
-custom work, use `add_raw_step()` or `add_epoch_step()` with explicit
-`name`, `version`, and `params`; the pure operations are also available under
-`prep.steps`.
+Without `trial_sequences`, every matching `event_id` event starts one epoch.
+With sequences, the mapping value defines the required ordered event codes and
+the mapping key is time zero unless `time_zero` overrides it. Relative event
+times are added to metadata. `sync_eyelink()` reuses this registered epoch
+definition.
 
-`configure_gaze()` stores physical display geometry in dataset provenance. It
-does not change the EyeLink channels. Later eligibility and artifact rules use
-degree-valued keys such as `deviation_deg` and `shift_deg`; `mveeg` performs the
-pixel-threshold conversion internally.
+Behavior alignment is deliberately strict: preprocessing may filter the table,
+but `align_behavior()` then requires one row per current epoch in the existing
+order. Reserved identity columns cannot come from behavior.
 
-Construction settings belong on `pipeline` before `build_epochs()`. Signal
-preprocessing and artifact rules belong after build:
+## Metadata and custom steps
 
-```python
-preprocessed = prep.preprocess_epochs(
-    prepared,
-    "data/preprocessed",
-    eligibility={
-        "time_window": (-0.25, 3.0),
-        "gaze": {"deviation_deg": 1.25, "shift_deg": 0.75},
-        "eeg": eligibility_eeg_config,
-    },
-    autoreject=autoreject_config,
-)
+`transform_metadata(**variables)` evaluates variables in written order. Each
+function receives the current metadata and returns a scalar or one value per
+epoch. It cannot replace `subject_index` or `epoch_index`. For
+`recompute="changed"`, actual derived values enter the subject input
+fingerprint, so changing a function's output rebuilds the affected subject.
 
-preprocessed.label_artifacts(
-    reject={
-        "time_window": (-0.25, 3.0),
-        "hf_noise": {
-            "band": (25, 45),
-            "window_duration": 0.25,
-            "z_threshold": 6,
-            "min_noisy_fraction": 0.20,
-            "bad_channels": 5,
-        },
-    },
-    review={
-        "time_window": (-0.25, 3.0),
-        "eeg": review_eeg_config,
-        "hf_noise": {
-            "band": (25, 45),
-            "window_duration": 0.25,
-            "z_threshold": 4,
-            "min_noisy_fraction": 0.20,
-            "bad_channels": 4,
-        },
-    },
-    ignore_channels=["Fp1", "Fp2"],
-)
-```
+Use `add_raw_step()` and `add_epoch_step()` only for reusable work that cannot
+be expressed by built-in steps. Custom steps require stable `name`, `version`,
+and JSON-like `params` for provenance.
 
-The `hf_noise` rule labels residual high-frequency outliers downstream of the
-optional AutoReject stage. It band-filters each epoch and measures log
-mean-square power in complete sliding windows. `window_duration` is in seconds;
-the sample count is rounded for the dataset's sampling rate, windows overlap by
-a fixed 50%, and the last possible complete window is included. Its robust
-subject/channel reference excludes ineligible epochs and AutoReject-bad
-epochs. When AutoReject is enabled, only channel/epoch cells labeled good
-(`0`) enter the reference; bad (`1`) and interpolated (`2`) cells do not.
-Channels in `epochs.info["bads"]` are not scored.
+## Eye-gaze geometry and output
 
-A channel is labeled when the fraction of windows at or above `z_threshold`
-reaches `min_noisy_fraction`; an epoch reaches the rule's status when at least
-`bad_channels` channels are labeled. `ignore_channels` retains their sparse
-channel reasons but excludes them from this epoch-level count. `band`,
-`window_duration`, `z_threshold`, `min_noisy_fraction`, and `bad_channels` are
-all required.
+`configure_gaze()` stores viewing distance, screen width, and pixel width in
+dataset provenance. It does not transform EyeLink channels. Degree-based
+quality rules use this geometry later.
 
-This is label-only QC: its measurement filter is not applied to saved signal
-and it does not remove trials. A high-frequency label is not evidence that the
-source was muscle activity. Because the comparison is within subject and
-channel, it is not designed to identify a subject or channel that is
-persistently elevated across most trials. Such persistent noise requires a
-separate dataset-level diagnostic.
-
-Open the result in a later script with:
-
-```python
-prepared = prep.open_pipeline("data/prepared")
-epochs = prepared.load_epochs("4001")
-```
-
-The reopened handle reads gaze geometry from provenance, so it does not need
-another `configure_gaze()` call. If geometry was omitted during construction,
-`prepared.configure_gaze(...)` may add it after build and persist it for later
-reopens.
+`build_epochs()` publishes the complete dataset atomically. `never` reuses
+completed subjects, `changed` rebuilds changed inputs, and `all` rebuilds the
+selected cohort. See the [dataset contract](dataset.md) and the downstream
+[quality workflow](quality.md).

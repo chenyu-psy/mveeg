@@ -16,9 +16,8 @@ integration and release branches and should only change through pull requests.
 
 ## Version Updates
 
-The package version is stored in both `pyproject.toml` and
-`src/mveeg/__init__.py`. Update both values together on `develop` before opening
-the release pull request into `main`.
+The package version has one source of truth: `pyproject.toml`. Update it on
+`develop` before opening the release pull request into `main`.
 
 GitHub Releases use tags derived from the project version, such as `v0.1.1`.
 If a tag or release for the current version already exists, the release workflow
@@ -29,6 +28,8 @@ fails and the version must be bumped on `develop`.
 Run these checks before opening a pull request:
 
 ```bash
+uv run ruff check .
+uv run ruff format --check .
 uv run python -m pytest
 uv build
 ```

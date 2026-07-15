@@ -65,9 +65,9 @@ may use columns created earlier in the same call. The transform cannot replace
 `subject_index` or `epoch_index`. mveeg fingerprints the resulting variable
 values per subject; callers do not provide transform names or versions.
 
-`trials.subject` is the canonical `subject_index`. A metadata column named
-`subject` is omitted only when it contains the same identities; a conflicting
-column remains a schema error.
+`trials` begins with the canonical `subject_index + epoch_index`. A metadata
+column named `subject` is omitted only when it exactly repeats
+`subject_index`; otherwise it remains ordinary experiment metadata.
 
 `prepare_epochs()` expresses `crop` in seconds and `time_bin` in milliseconds.
 The result tables use milliseconds without a unit suffix. `time` is the bin
@@ -154,9 +154,9 @@ enabled, generalization accuracy.
 
 Supporting tables:
 
-- `analysis(version, output, generalization, seed, config, fingerprint, created, updated)`, where `generalization` is JSON or `NULL`
-- `subjects(subject, status, fingerprint, reason, updated)`
-- `trials(subject, trial, class, evidence_group, <selected post-transform metadata>)`
+- `analysis(schema_version, mveeg_version, output, generalization, seed, config, fingerprint, created, updated)`, where `generalization` is JSON or `NULL`
+- `subjects(subject_index, status, fingerprint, reason, updated)`
+- `trials(subject_index, epoch_index, class, evidence_group, <selected post-transform metadata>)`
 - `classifier(name, parameters, classes, evidence_shape)`
 - `pattern_components(component, classes)`
 - `channels(channel, x, y)`
@@ -164,15 +164,15 @@ Supporting tables:
 
 Result tables for `output="mean"`:
 
-- `accuracy(subject, time, permutation, accuracy, n_correct, n_trials)`
-- `classifier_evidence(subject, trial, time, evidence, n_models)`
-- `confusion_matrix(subject, time, actual, predicted, count)`
-- `patterns(subject, time, channel, component, pattern)`
-- `generalization(subject, condition, train_time, test_time, permutation, accuracy, n_correct, n_trials)`
+- `accuracy(subject_index, time, permutation, accuracy, n_correct, n_trials)`
+- `classifier_evidence(subject_index, epoch_index, time, evidence, n_models)`
+- `confusion_matrix(subject_index, time, actual, predicted, count)`
+- `patterns(subject_index, time, channel, component, pattern)`
+- `generalization(subject_index, condition, train_time, test_time, permutation, accuracy, n_correct, n_trials)`
 
 For `output="all"`, `accuracy`, `confusion_matrix`, `patterns`, and
 `generalization` add `repeat, fold`; `classifier_evidence` uses
-`subject, trial, repeat, fold, time, evidence`. The `generalization` table is
+`subject_index, epoch_index, repeat, fold, time, evidence`. The `generalization` table is
 not created when `generalization=None`. Its `condition` column preserves the
 post-transform target value, and mean accuracy is weighted from accumulated
 `n_correct` and `n_trials`. Confusion values are accumulated raw counts and are
@@ -194,3 +194,6 @@ Each subject's result rows are committed together. `subjects.status` is
 `pending`, `complete`, or `failed`; failures keep their reason. There is no
 fold-level checkpoint. Subjects that do not need recomputation are reused
 without loading their epochs or displaying a progress bar.
+
+Common transaction, version, fixed-column, and unitless channel-coordinate
+rules are documented once in the [DuckDB result contract](results.md).

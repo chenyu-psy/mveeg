@@ -2,43 +2,36 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from .._dataset.manifest import MANIFEST_COLUMNS, read_json
+from .._dataset.store import DatasetBuilder, write_json_atomic, write_table_atomic
+from .._provenance import fingerprint, fingerprint_files
 from .artifacts import (
     _join_reasons,
     build_artifact_table,
     read_artifact_table,
     write_artifact_table,
 )
-from .dataset import (
-    DatasetBuilder,
-    DatasetPipeline,
-    MANIFEST_COLUMNS,
-    _read_json,
-    _write_json_atomic,
-    _write_table_atomic,
-    fingerprint,
-    fingerprint_files,
-    open_pipeline,
-)
 from .gaze import normalize_gaze_geometry
+from .pipeline.dataset import DatasetPipeline, open_pipeline
 from .quality import (
-    _gaze_rule_requires_geometry,
     apply_autoreject,
     check_eligibility,
     label_artifact_rules,
     load_quality_state,
     save_quality_state,
 )
+from .quality.eligibility import _gaze_rule_requires_geometry
 
 
-def preprocess_epochs(
-    prepared: DatasetPipeline | str | Path,
+def _preprocess_epochs(
+    prepared: DatasetPipeline,
     output_dir: str | Path,
     *,
     eligibility: Mapping[str, object],
@@ -51,17 +44,15 @@ def preprocess_epochs(
     AutoReject removes a row from the preprocessed dataset.
     """
 
-    source = open_pipeline(prepared) if not isinstance(prepared, DatasetPipeline) else prepared
+    source = prepared
     if source.stage != "prepared":
         raise ValueError(f"preprocess_epochs requires a prepared dataset, found {source.stage!r}.")
-    source_provenance = _read_json(source.root / "provenance.json")
+    source_provenance = read_json(source.root / "provenance.json")
     gaze_geometry = _gaze_geometry_from_provenance(
         source_provenance,
         required=(
             "gaze" in eligibility
-            and _gaze_rule_requires_geometry(
-                eligibility["gaze"], context="eligibility.gaze"
-            )
+            and _gaze_rule_requires_geometry(eligibility["gaze"], context="eligibility.gaze")
         ),
         context="eligibility.gaze",
         pipeline_spec=False,
@@ -120,10 +111,9 @@ def preprocess_epochs(
             staged_quality_path = quality_state_path(
                 builder.working_root, subject_index, source.task
             )
-            _save_quality_state_atomic(
-                staged_quality_path, eligibility_result, autoreject_result
-            )
-        result = builder.finish()
+            _save_quality_state_atomic(staged_quality_path, eligibility_result, autoreject_result)
+        summary = builder.finish()
+        result = DatasetPipeline(output_dir, run_summary=summary)
     except Exception:
         builder.abort()
         raise
@@ -166,16 +156,15 @@ def label_artifacts(
 
     dataset = open_pipeline(pipeline) if not isinstance(pipeline, DatasetPipeline) else pipeline
     if dataset.stage != "preprocessed":
-        raise ValueError(f"label_artifacts requires a preprocessed dataset, found {dataset.stage!r}.")
-    if "gaze" in reject:
         raise ValueError(
-            "reject.gaze is unsupported; hard gaze rules belong in eligibility.gaze."
+            f"label_artifacts requires a preprocessed dataset, found {dataset.stage!r}."
         )
+    if "gaze" in reject:
+        raise ValueError("reject.gaze is unsupported; hard gaze rules belong in eligibility.gaze.")
     gaze_geometry = _gaze_geometry_from_provenance(
-        _read_json(dataset.root / "provenance.json"),
+        read_json(dataset.root / "provenance.json"),
         required=(
-            "gaze" in review
-            and _gaze_rule_requires_geometry(review["gaze"], context="review.gaze")
+            "gaze" in review and _gaze_rule_requires_geometry(review["gaze"], context="review.gaze")
         ),
         context="review.gaze",
         pipeline_spec=True,
@@ -238,7 +227,7 @@ def label_artifacts(
             manifest["subject_index"].astype(str).eq(str(subject_index)),
             "artifacts_path",
         ] = relative
-    _write_table_atomic(manifest[MANIFEST_COLUMNS], dataset.root / "manifest.tsv")
+    write_table_atomic(manifest[MANIFEST_COLUMNS], dataset.root / "manifest.tsv")
     _extend_provenance(
         dataset.root,
         {
@@ -277,9 +266,7 @@ def _append_autoreject_channel_reasons(
     output = np.asarray(reasons, dtype=object).copy()
     labels = np.asarray(autoreject_state["labels"], dtype=np.int8)
     eeg_channels = [str(channel) for channel in autoreject_state["eeg_channels"]]
-    channel_positions = {
-        channel: index for index, channel in enumerate(epochs.ch_names)
-    }
+    channel_positions = {channel: index for index, channel in enumerate(epochs.ch_names)}
     for eeg_position, channel in enumerate(eeg_channels):
         channel_position = channel_positions[channel]
         for epoch_position in np.flatnonzero(labels[:, eeg_position] > 0):
@@ -327,9 +314,9 @@ def _save_quality_state_atomic(path: Path, eligibility, autoreject) -> None:
 
 
 def _extend_provenance(root: Path, updates: Mapping[str, object]) -> None:
-    provenance = _read_json(root / "provenance.json")
+    provenance = read_json(root / "provenance.json")
     provenance.update(updates)
-    _write_json_atomic(provenance, root / "provenance.json")
+    write_json_atomic(provenance, root / "provenance.json")
 
 
 def _validate_autoreject_state(epochs, state: Mapping[str, object]) -> None:

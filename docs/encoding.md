@@ -123,26 +123,26 @@ training trials. Only this full-data raw-scale beta is written to
 
 Supporting tables:
 
-- `analysis(version, seed, config, fingerprint, created, updated)`
-- `subjects(subject, status, fingerprint, reason, updated)`
-- `trials(subject, trial, training_group, expression_group, <post-transform metadata>)`
+- `analysis(schema_version, mveeg_version, seed, config, fingerprint, created, updated)`
+- `subjects(subject_index, status, fingerprint, reason, updated)`
+- `trials(subject_index, epoch_index, training_group, expression_group, <post-transform metadata>)`
 - `predictors(predictor, term, role, penalty)`
 - `channels(channel, x, y)`
 - `time_bins(time, start, end)` in milliseconds
 
 Primary results:
 
-- `coefficients(subject, time, channel, predictor, beta)`
-- `pattern_expression(subject, trial, time, component, expression_group, expression, fold)`
-- `design_diagnostics(subject, fold, diagnostic, predictor, value, threshold, status, message)`
-- `covariance_diagnostics(subject, fold, time, n_train_trials, n_channels, rank, condition_number, log_determinant, shrinkage, status)`
+- `coefficients(subject_index, time, channel, predictor, beta)`
+- `pattern_expression(subject_index, epoch_index, time, component, expression_group, expression, fold)`
+- `design_diagnostics(subject_index, fold, diagnostic, predictor, value, threshold, status, message)`
+- `covariance_diagnostics(subject_index, fold, time, n_train_trials, n_channels, rank, condition_number, log_determinant, shrinkage, status)`
 
 `predictors.role` is `intercept`, `component`, or `condition`. Coefficients
 include all three roles; pattern expression includes components only.
 
-`condition_pattern_expression` is a DuckDB view over the trial expression rows.
-It reports subject, expression group as `condition`, component, time, mean, SD,
-SE, and distinct trial count. Other summaries are intentionally not stored.
+`condition_pattern_expression` is a DuckDB view over the epoch expression rows.
+It reports `subject_index`, expression group as `condition`, component, time,
+mean, SD, SE, and distinct epoch count. Other summaries are intentionally not stored.
 Time-window averaging, GFP normalization, group topographies, inferential
 models, and plotting belong in downstream R code using `coefficients`,
 `predictors`, and `channels`.
@@ -162,3 +162,6 @@ Each subject is committed transactionally. A failure records its reason in
 `subjects` without partial result rows. Model comparison, time smoothing,
 Bayesian estimation, and cross-subject hierarchical models are outside the 0.3
 contract.
+
+Common transaction, version, fixed-column, and unitless channel-coordinate
+rules are documented once in the [DuckDB result contract](results.md).

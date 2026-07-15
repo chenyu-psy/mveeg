@@ -34,13 +34,8 @@ def _degrees_to_pixels(
 
     degrees = _positive_number(degrees, "visual-angle threshold")
     geometry = normalize_gaze_geometry(**gaze_geometry)
-    visual_width_cm = 2 * geometry["viewing_distance_cm"] * tan(
-        0.5 * radians(degrees)
-    )
-    return round(
-        visual_width_cm
-        / (geometry["screen_width_cm"] / geometry["screen_width_px"])
-    )
+    visual_width_cm = 2 * geometry["viewing_distance_cm"] * tan(0.5 * radians(degrees))
+    return round(visual_width_cm / (geometry["screen_width_cm"] / geometry["screen_width_px"]))
 
 
 def _positive_number(value: object, name: str) -> float:
