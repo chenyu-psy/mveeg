@@ -227,43 +227,51 @@ persistent channel- or subject-level noise separately.
   stored gaze geometry. It does not restore an active raw pipeline, infer a
   latest stage, or require geometry to be entered again.
 
-## Metadata in encoding and decoding
+## Encoding
 
-Artifact fields are merged by `subject_index + epoch_index`. A modeling-only
-transform runs after that merge and before condition selection or filtering.
-It must preserve trial identity and provide a stable name and version.
+Encoding is an independent manifest-backed pipeline. It fits a time-resolved
+multivariate linear encoding model with separate component and condition ridge
+penalties, then writes one public DuckDB result.
 
 ```python
-from mveeg.encoding.workflow import run_regression_model
+from mveeg import encoding
 
-
-def add_load(metadata):
-    return metadata.assign(load=metadata["set_size"].astype(float))
-
-
-tables = run_regression_model(
-    data_dir="data/preprocessed",
-    subject_ids=["4001", "4002"],
-    trial_filters={
-        "qc_col": "final_status",
-        "keep_qc": ["accepted"],
-        "exclude_metadata": {},
-    },
-    encoding_params={
-        "crop_time": (-0.2, 1.0),
-        "drop_channel_types": [],
-        "drop_channels": [],
-        "time_window_ms": 50,
-    },
-    condition_label_map={"high": ["SS4"], "low": ["SS2"]},
-    metadata_transform=add_load,
-    metadata_transform_name="add_load",
-    metadata_transform_version="1",
-    formula="pattern ~ 1 + load",
-    overwrite=False,
-    name="load_model",
+pipeline = encoding.init_pipeline("data/preprocessed")
+pipeline.transform_metadata(
+    color=lambda x: x["color_count"].gt(0).astype(float),
+    number=lambda x: x["number_count"].gt(0).astype(float),
+    load=lambda x: (x["color_count"] + x["number_count"] - 1).astype(float),
+    interaction=lambda x: (x["color"].eq(1) & x["number"].eq(1)).astype(float),
+)
+pipeline.select_trials(
+    qc="final_status",
+    keep=["accepted"],
+    exclude={},
+)
+pipeline.prepare_epochs(crop=(-0.3, 2.2), time_bin=50)
+pipeline.setup_model(
+    penalty={"component": 1.0, "condition": 0.1},
+)
+pipeline.setup_cv(folds=5, seed=None)
+pipeline.encode(
+    formula="1 + color + number + load + interaction",
+    target="condition",
+    conditions={"0C1N": ["0C1N"], "1C0N": ["1C0N"], "1C1N": ["1C1N"]},
+    expression=None,
+    file="results/encoding.duckdb",
+    recompute="never",
+    n_jobs=5,
+    progress=True,
 )
 ```
+
+Metadata variables are evaluated in order, so later variables may use earlier
+ones. `conditions` defines the training cells and complete penalized condition
+basis; `expression` may add nontraining cells and defaults to `conditions`.
+Every selected trial receives one held-out expression value per component and
+time bin. Full-data raw-scale coefficients are stored separately for later R
+summaries and topographies. `encode()` returns `None`; query the documented
+DuckDB tables directly. See [Encoding API and result contract](docs/encoding.md).
 
 ## Decoding
 

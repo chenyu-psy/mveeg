@@ -15,7 +15,6 @@ from mveeg._shared.metadata import (
     metadata_transform_spec,
     transform_metadata,
 )
-from mveeg.encoding.workflow_model import _load_subject_arrays
 
 
 def test_transform_metadata_preserves_trial_identity():
@@ -187,25 +186,6 @@ def test_dataset_loader_does_not_discover_unlisted_artifact_sidecar(tmp_path):
     _, metadata = load_subject_epochs_and_metadata(root, "001", preload=False)
 
     assert "final_status" not in metadata.columns
-
-
-def test_encoding_loader_calls_shared_subject_index_api(tmp_path):
-    root = _write_dataset(tmp_path)
-    cfg = _loader_config(root, condition_col="raw_condition", values=("A", "B"))
-
-    data, conditions, times, channels, metadata = _load_subject_arrays(
-        subject_id="001",
-        loader_cfg=cfg,
-        source_condition_col="raw_condition",
-        source_to_condition={"A": "a", "B": "b"},
-        time_window_ms=20,
-    )
-
-    assert data.shape == (2, 2, 2)
-    assert conditions.tolist() == ["a", "b"]
-    assert times.tolist() == [0.01, 0.03]
-    assert channels == ["Fz", "Cz"]
-    assert metadata["epoch_index"].tolist() == [0, 3]
 
 
 def _loader_config(root, *, condition_col, values):
