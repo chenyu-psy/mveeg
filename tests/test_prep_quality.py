@@ -742,6 +742,31 @@ def test_hf_info_bads_are_not_scored_but_ignored_channels_keep_reason(
     assert not result.epoch_rejected[2]
 
 
+def test_hf_unscored_channel_uses_base_reference_when_other_channel_is_active(
+    no_op_epoch_filter,
+):
+    epochs = _hf_epochs_from_log_power(
+        np.asarray([[-24.0, -24.0], [-22.0, -22.0], [-12.0, -12.0]])
+    )
+    labels = np.asarray([[-1, 0], [-1, 0], [-1, 2]], dtype=np.int8)
+    result = _label_rules(
+        epochs,
+        labels=labels,
+        reject_config={
+            "hf_noise": _hf_config(
+                window_duration=1.0,
+                min_noisy_fraction=1.0,
+                bad_channels=2,
+            )
+        },
+        ignore_channels=["E0"],
+    )
+
+    assert "high_frequency_noise" in result.rejected_reasons[2, 0]
+    assert "high_frequency_noise" in result.rejected_reasons[2, 1]
+    assert not result.epoch_rejected[2]
+
+
 def test_hf_requires_two_reference_epochs_per_channel(no_op_epoch_filter):
     epochs = _hf_epochs_from_log_power(np.asarray([[-24.0], [-22.0], [-12.0]]))
     eligibility = _eligibility_state(

@@ -8,7 +8,7 @@ from mveeg import prep
 
 pipeline = prep.init_pipeline("data/raw", subject_pattern="sub*")
 pipeline.load_eeg("*.vhdr")
-pipeline.load_eyelink("*.asc")
+pipeline.load_eyelink()
 pipeline.configure_gaze(
     viewing_distance_cm=80,
     screen_width_cm=53.2,
@@ -38,6 +38,13 @@ prepared = pipeline.build_epochs(
     recompute="never",
 )
 ```
+
+`load_eyelink()` discovers `.asc` and `.edf` files in each subject folder
+without a filename pattern. Existing ASC files are reused. When an EDF file
+has no matching ASC file, `build_epochs()` runs the SR Research `edf2asc`
+converter from `PATH` and keeps the generated ASC beside the EDF. Missing
+inputs, a missing converter, and failed conversions raise subject-specific
+errors before any EyeLink data are read.
 
 `load_behavior(include=...)` is the pre-alignment filter. `align_behavior()`
 requires exactly one behavior row per epoch and only attaches rows in their

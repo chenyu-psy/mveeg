@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+import shutil
+import subprocess
 import warnings
 
 import mne
@@ -94,20 +96,16 @@ class RawPipeline:
         }
         return self
 
-    def load_eyelink(
-        self,
-        pattern: str = "*.asc",
-        *,
-        reader: Callable | None = None,
-        **reader_kwargs: object,
-    ) -> RawPipeline:
-        """Register optional EyeLink ASCII loading from each subject folder."""
+    def load_eyelink(self) -> RawPipeline:
+        """Register automatic EyeLink ASC/EDF loading from each subject folder."""
         if self._eye_loader is not None:
             raise RuntimeError("load_eyelink can only be registered once.")
+        # Keep the established provenance shape so this API cleanup does not
+        # invalidate prepared datasets built with the previous default call.
         self._eye_loader = {
-            "pattern": pattern,
-            "reader": reader,
-            "reader_kwargs": dict(reader_kwargs),
+            "pattern": "*.asc",
+            "reader": None,
+            "reader_kwargs": {},
         }
         return self
 
@@ -433,16 +431,7 @@ class RawPipeline:
     def _load_eye(self, subject_dir: Path) -> mne.io.BaseRaw:
         """Load and concatenate registered EyeLink files for one subject."""
         assert self._eye_loader is not None
-        paths = _matched_files(subject_dir, str(self._eye_loader["pattern"]))
-        reader = self._eye_loader["reader"]
-        kwargs = dict(self._eye_loader["reader_kwargs"])
-        raws = []
-        for path in paths:
-            if reader is not None:
-                raw = reader(path, verbose="ERROR", **kwargs)
-            else:
-                raw = _read_eyelink(path, **kwargs)
-            raws.append(raw)
+        raws = [_read_eyelink(path) for path in _eyelink_files(subject_dir)]
         return raws[0] if len(raws) == 1 else mne.concatenate_raws(raws, verbose="ERROR")
 
     def _load_behavior(self, subject_dir: Path) -> pd.DataFrame:
@@ -461,12 +450,14 @@ class RawPipeline:
 
     def _input_paths(self, subject_dir: Path) -> list[Path]:
         """Return every registered source file used for one subject."""
-        loaders = [self._eeg_loader, self._eye_loader, self._behavior_loader]
+        loaders = [self._eeg_loader, self._behavior_loader]
         paths: list[Path] = []
         for loader in loaders:
             if loader is not None:
                 for path in _matched_files(subject_dir, str(loader["pattern"])):
                     paths.extend(_source_dependencies(path))
+        if self._eye_loader is not None:
+            paths.extend(_eyelink_files(subject_dir))
         return sorted(set(paths))
 
     def _discover_subjects(self) -> list[tuple[str, Path]]:
@@ -534,6 +525,55 @@ def _matched_files(subject_dir: Path, pattern: str) -> list[Path]:
     return paths
 
 
+def _eyelink_files(subject_dir: Path) -> list[Path]:
+    """Return EyeLink ASC files, converting missing EDF counterparts in place."""
+    files = sorted(path for path in subject_dir.iterdir() if path.is_file())
+    asc_paths = [path for path in files if path.suffix.lower() == ".asc"]
+    edf_paths = [path for path in files if path.suffix.lower() == ".edf"]
+    if not asc_paths and not edf_paths:
+        raise FileNotFoundError(f"No EyeLink .asc or .edf files found in {subject_dir}.")
+
+    asc_stems = {path.stem.casefold() for path in asc_paths}
+    pending = [path for path in edf_paths if path.stem.casefold() not in asc_stems]
+    if not pending:
+        return asc_paths
+
+    converter = shutil.which("edf2asc")
+    if converter is None:
+        raise FileNotFoundError(
+            "EyeLink EDF files require the `edf2asc` converter, but it is not installed "
+            f"or not on PATH: {subject_dir}."
+        )
+
+    for edf_path in pending:
+        result = subprocess.run(
+            [converter, str(edf_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        generated = [
+            path
+            for path in subject_dir.iterdir()
+            if path.is_file()
+            and path.suffix.lower() == ".asc"
+            and path.stem.casefold() == edf_path.stem.casefold()
+        ]
+        if not generated:
+            raise RuntimeError(
+                f"edf2asc did not create an ASC file for {edf_path.name} "
+                f"(exit status {result.returncode}).\n"
+                f"stdout:\n{result.stdout}\n"
+                f"stderr:\n{result.stderr}"
+            )
+
+    return sorted(
+        path
+        for path in subject_dir.iterdir()
+        if path.is_file() and path.suffix.lower() == ".asc"
+    )
+
+
 def _source_dependencies(path: Path) -> list[Path]:
     """Include companion files used by common MNE header-based formats."""
     dependencies = [path]
@@ -548,17 +588,11 @@ def _source_dependencies(path: Path) -> list[Path]:
     return dependencies
 
 
-def _read_eyelink(path: Path, **kwargs: object) -> mne.io.BaseRaw:
+def _read_eyelink(path: Path) -> mne.io.BaseRaw:
     """Read EyeLink ASCII with an internal binocular fallback."""
     try:
-        return mne.io.read_raw_eyelink(path, verbose="ERROR", **kwargs)
+        return mne.io.read_raw_eyelink(path, verbose="ERROR")
     except (RuntimeError, ValueError) as mne_error:
-        if kwargs:
-            options = ", ".join(sorted(kwargs))
-            raise ValueError(
-                f"MNE could not read {path.name}, and mveeg's fallback EyeLink reader "
-                f"cannot apply reader options: {options}."
-            ) from mne_error
         try:
             raw = _read_eyelink_fallback(path)
         except (OSError, ValueError) as mveeg_error:

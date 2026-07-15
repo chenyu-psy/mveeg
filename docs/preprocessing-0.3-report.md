@@ -325,9 +325,9 @@ did not introduce a project-specific format adapter.
 MNE 1.12.1 can also mistake a signed first sample such as `-94.4` for an
 EyeLink status column. Until [MNE PR #13571](https://github.com/mne-tools/mne-python/pull/13571)
 is released, mveeg silently handles only the resulting 7-to-6 binocular column
-error with its validated reader. Other MNE failures still warn, and fallback is
-refused when MNE-specific reader options were supplied rather than silently
-ignoring those options.
+error with its validated reader. Other MNE failures still warn. The public
+EyeLink loader is intentionally parameter-free so this parsing contract cannot
+be bypassed with reader-specific options.
 
 Raw dataset builds now show one subject-level progress bar by default, while
 package-owned raw loading suppresses MNE's uninformative `Reading 0 ...` log.

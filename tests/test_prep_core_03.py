@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import mne
 import numpy as np
@@ -12,6 +13,7 @@ import pytest
 from mveeg.prep.dataset import DatasetBuilder, MANIFEST_COLUMNS, fingerprint, open_pipeline
 from mveeg.prep.external import init_external
 from mveeg.prep.pipeline import (
+    _eyelink_files,
     _read_eyelink,
     _read_eyelink_fallback,
     _source_dependencies,
@@ -59,6 +61,106 @@ def _write_raw_subject(root, subject: str, n_events: int) -> None:
         )
     )
     raw.save(subject_dir / f"sub{subject}_raw.fif", overwrite=True, verbose="ERROR")
+
+
+def test_eyelink_registration_preserves_canonical_provenance(tmp_path) -> None:
+    """The no-argument API keeps existing prepared-dataset fingerprints stable."""
+    pipeline = init_pipeline(tmp_path).load_eyelink()
+
+    assert pipeline._pipeline_spec()["load_eyelink"] == {
+        "pattern": "*.asc",
+        "reader": None,
+        "reader_kwargs": {},
+    }
+
+
+def test_eyelink_edf_is_converted_before_input_fingerprinting(tmp_path, monkeypatch) -> None:
+    """Raw input discovery fingerprints the generated ASC used by the reader."""
+    subject_dir = tmp_path / "raw" / "sub4001"
+    subject_dir.mkdir(parents=True)
+    eeg = subject_dir / "sub4001_raw.fif"
+    edf = subject_dir / "sub4001.edf"
+    eeg.write_bytes(b"eeg")
+    edf.write_bytes(b"edf")
+
+    monkeypatch.setattr("mveeg.prep.pipeline.shutil.which", lambda name: "/bin/edf2asc")
+
+    def convert(command, **kwargs):
+        assert command == ["/bin/edf2asc", str(edf)]
+        assert kwargs == {"capture_output": True, "text": True, "check": False}
+        edf.with_suffix(".asc").write_text("asc")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("mveeg.prep.pipeline.subprocess.run", convert)
+    pipeline = init_pipeline(tmp_path / "raw").load_eeg("*.fif").load_eyelink()
+
+    assert pipeline._input_paths(subject_dir) == sorted([eeg, edf.with_suffix(".asc")])
+
+
+def test_eyelink_conversion_is_case_insensitive_and_fills_only_missing_files(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Existing ASC files are reused while missing EDF counterparts are converted."""
+    subject_dir = tmp_path / "sub4001"
+    subject_dir.mkdir()
+    existing = subject_dir / "RUN1.ASC"
+    existing.write_text("asc")
+    (subject_dir / "run1.edf").write_bytes(b"edf")
+    pending = subject_dir / "run2.EDF"
+    pending.write_bytes(b"edf")
+    calls = []
+
+    monkeypatch.setattr("mveeg.prep.pipeline.shutil.which", lambda name: "/bin/edf2asc")
+
+    def convert(command, **kwargs):
+        calls.append(command)
+        pending.with_suffix(".asc").write_text("asc")
+        return subprocess.CompletedProcess(command, 7, "converted successfully", "")
+
+    monkeypatch.setattr("mveeg.prep.pipeline.subprocess.run", convert)
+
+    assert _eyelink_files(subject_dir) == [existing, pending.with_suffix(".asc")]
+    assert calls == [["/bin/edf2asc", str(pending)]]
+
+
+def test_eyelink_conversion_reports_missing_source_and_converter(tmp_path, monkeypatch) -> None:
+    """Missing EyeLink inputs and converter installations have distinct errors."""
+    subject_dir = tmp_path / "sub4001"
+    subject_dir.mkdir()
+    with pytest.raises(FileNotFoundError, match=r"No EyeLink \.asc or \.edf.*sub4001"):
+        _eyelink_files(subject_dir)
+
+    (subject_dir / "sub4001.edf").write_bytes(b"edf")
+    monkeypatch.setattr("mveeg.prep.pipeline.shutil.which", lambda name: None)
+    with pytest.raises(FileNotFoundError, match=r"edf2asc.*PATH.*sub4001"):
+        _eyelink_files(subject_dir)
+
+
+def test_eyelink_conversion_failure_reports_process_output(tmp_path, monkeypatch) -> None:
+    """A converter that creates no ASC reports all useful diagnostics."""
+    subject_dir = tmp_path / "sub4001"
+    subject_dir.mkdir()
+    edf = subject_dir / "sub4001.edf"
+    edf.write_bytes(b"edf")
+    monkeypatch.setattr("mveeg.prep.pipeline.shutil.which", lambda name: "/bin/edf2asc")
+    monkeypatch.setattr(
+        "mveeg.prep.pipeline.subprocess.run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            2,
+            "bad stdout",
+            "bad stderr",
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        _eyelink_files(subject_dir)
+    message = str(error.value)
+    assert "sub4001.edf" in message
+    assert "exit status 2" in message
+    assert "bad stdout" in message
+    assert "bad stderr" in message
 
 
 def test_behavior_alignment_is_strict_count_and_order() -> None:
@@ -166,21 +268,6 @@ def test_unexpected_mne_eyelink_error_still_warns(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(mne.io, "read_raw_eyelink", fail_mne)
     with pytest.warns(UserWarning, match="MNE could not read"):
         _read_eyelink(asc)
-
-
-def test_eyelink_fallback_never_ignores_reader_options(tmp_path, monkeypatch) -> None:
-    """MNE-specific reader options cannot silently disappear in the fallback."""
-
-    def fail_mne(*args, **kwargs):
-        raise ValueError("unexpected parser failure")
-
-    def fail_fallback(*args, **kwargs):
-        raise AssertionError("fallback must not run when reader options were supplied")
-
-    monkeypatch.setattr(mne.io, "read_raw_eyelink", fail_mne)
-    monkeypatch.setattr("mveeg.prep.pipeline._read_eyelink_fallback", fail_fallback)
-    with pytest.raises(ValueError, match="cannot apply reader options: create_annotations"):
-        _read_eyelink(tmp_path / "eye.asc", create_annotations=False)
 
 
 def test_eyelink_reports_both_reader_failures(tmp_path, monkeypatch) -> None:

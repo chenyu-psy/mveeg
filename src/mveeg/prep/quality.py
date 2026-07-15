@@ -654,12 +654,12 @@ def _high_frequency_zscores(
     log_power = np.log(np.maximum(powers, np.finfo(float).tiny))
 
     reference_epochs = np.asarray(eligibility.eligible, dtype=bool) & ~autoreject_bad_epochs
-    active_autoreject = bool(np.any(autoreject_labels >= 0))
     zscores = np.full(log_power.shape, np.nan, dtype=float)
     for column, pick in enumerate(scored_picks):
         reference = reference_epochs.copy()
-        if active_autoreject:
-            reference &= scored_labels[:, column] == 0
+        channel_labels = scored_labels[:, column]
+        if np.any(channel_labels >= 0):
+            reference &= channel_labels == 0
         if int(reference.sum()) < 2:
             raise ValueError(
                 "hf_noise requires at least two reference epochs for channel "

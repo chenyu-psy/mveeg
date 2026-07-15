@@ -20,7 +20,7 @@ from mveeg import prep
 
 pipeline = prep.init_pipeline("data/raw")
 pipeline.load_eeg("*.vhdr")
-pipeline.load_eyelink("*.asc")
+pipeline.load_eyelink()
 pipeline.configure_gaze(
     viewing_distance_cm=80,
     screen_width_cm=53.2,

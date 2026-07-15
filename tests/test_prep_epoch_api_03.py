@@ -175,6 +175,7 @@ def test_sampling_rate_resamples_epochs_and_old_public_names_are_absent():
         assert "sampling_rate" in parameters
         assert {"tmin", "tmax", "sfreq", "timelock_index"}.isdisjoint(parameters)
     assert list(inspect.signature(RawPipeline.sync_eyelink).parameters) == ["self"]
+    assert list(inspect.signature(RawPipeline.load_eyelink).parameters) == ["self"]
 
 
 def test_raw_pipeline_resolves_time_zero_and_sync_inherits_epoch_config(
