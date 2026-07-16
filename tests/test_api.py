@@ -5,10 +5,10 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
-import tomllib
 
 import mveeg
 
@@ -19,9 +19,7 @@ def test_root_namespace_is_deliberately_small():
 
 
 def test_version_comes_from_project_metadata():
-    with Path("pyproject.toml").open("rb") as handle:
-        project_version = tomllib.load(handle)["project"]["version"]
-    assert mveeg.__version__ == project_version == "0.3.0"
+    assert mveeg.__version__ == version("mveeg") == "0.3.0"
 
 
 def test_preprocessing_public_api():
