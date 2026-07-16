@@ -1,0 +1,101 @@
+# Quality, AutoReject, and artifact review
+
+Quality processing starts from a prepared `DatasetPipeline` and writes a
+separate preprocessed root:
+
+```python
+from mveeg import prep
+
+prepared = prep.open_pipeline("data/prepared")
+preprocessed = prepared.preprocess_epochs(
+    "data/preprocessed",
+    eligibility={
+        "time_window": (-0.2, 1.0),
+        "gaze": {
+            "deviation_deg": 1.25,
+            "shift_deg": 0.75,
+            "max_missing_fraction": 0.10,
+        },
+        "eeg": eligibility_eeg_config,
+    },
+    autoreject=autoreject_config,
+    recompute="changed",
+)
+```
+
+Quality schema 3 is the only supported sidecar state. Older local NPZ state
+must be regenerated. Eligibility, AutoReject, artifact rules, and review state
+are separate implementation units; the Matplotlib figure does not own saved
+review state.
+
+## Eligibility and AutoReject
+
+Eligibility identifies epochs and channels that may enter subsequent quality
+estimation. Gaze deviation/shift thresholds use visual degrees and therefore
+require persisted display geometry. Missing-sample limits do not require
+geometry. The signal is not deleted at this stage.
+
+Set `autoreject=None` to skip AutoReject. Otherwise AutoReject is fit only on
+eligible EEG data. `autoreject.exclude_channels` keeps named channels in the
+saved epochs while excluding them from threshold fitting, cross-validation,
+voting, and interpolation. Channels in `epochs.info["bads"]` follow the same
+model-exclusion behavior. Excluded-channel labels are stored as `-1`.
+
+## Artifact rules
+
+Artifact labeling is a later operation on the preprocessed dataset:
+
+```python
+preprocessed.label_artifacts(
+    reject={
+        "time_window": (-0.2, 1.0),
+        "eeg": reject_eeg_rules,
+        "hf_noise": {
+            "band": (25, 45),
+            "window_duration": 0.25,
+            "z_threshold": 6,
+            "min_noisy_fraction": 0.20,
+            "bad_channels": 5,
+        },
+    },
+    review={
+        "time_window": (-0.2, 1.0),
+        "eeg": review_eeg_rules,
+    },
+    ignore_channels=["Fp1", "Fp2"],
+)
+```
+
+The high-frequency rule measures band-filtered log mean-square power in
+complete 50%-overlapping windows. All five keys shown above are required. Its
+robust within-subject/channel reference excludes ineligible epochs,
+AutoReject-bad epochs, and cells not labeled good by AutoReject. An epoch
+reaches the configured status when at least `bad_channels` channels reach the
+window-coverage threshold.
+
+This rule writes labels only. Its measurement filter is not applied to saved
+EEG, it does not remove trials, and a label does not identify the physiological
+source as muscle. Persistently elevated subject/channel noise can define its
+own reference distribution and requires a separate dataset-level diagnostic.
+
+The artifact TSV keeps canonical identity, automatic and final status, epoch
+reasons, review state, and sparse channel reasons. Identity joins are validated
+when epochs are loaded.
+
+## Manual review
+
+```python
+preprocessed.review_artifacts(
+    subject_index="4001",
+    group_by="initial_status",
+    label="review",
+)
+```
+
+The call is blocking and returns `None` when the figure closes. Trial clicks
+toggle accepted/rejected state, arrow keys navigate, `r` toggles reason codes,
+and `w` saves accumulated edits for visited trials. Closing without `w` writes
+nothing. Figure callbacks and preloaded data are released on close.
+
+Review state is transactional and separate from the Matplotlib presentation,
+so UI changes do not alter the artifact storage contract.

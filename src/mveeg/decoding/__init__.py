@@ -1,5 +1,5 @@
-"""EEG decoding package.
+"""Independent pipeline for multiclass EEG decoding."""
 
-Import from the explicit submodules in this package, such as
-``mveeg.decoding.config`` or ``mveeg.decoding.workflow``.
-"""
+from ._pipeline import DecodingPipeline, init_pipeline
+
+__all__ = ["DecodingPipeline", "init_pipeline"]

@@ -1,10 +1,21 @@
-"""EEG preparation helpers for importing, cleaning, and reviewing data.
+"""Build, preprocess, and review manifest-backed EEG datasets."""
 
-The public name is short on purpose: scripts can use ``mveeg.prep`` without
-long import lines, while the module still contains the preprocessing workflow,
-quality-control helpers, and manual review visualizer.
-"""
+from . import steps
+from .pipeline import (
+    DatasetPipeline,
+    ExternalPipeline,
+    RawPipeline,
+    init_external,
+    init_pipeline,
+    open_pipeline,
+)
 
-from . import core, epoched_mat, qc, visualizer, workflow
-
-__all__ = ["core", "workflow", "qc", "epoched_mat", "visualizer"]
+__all__ = [
+    "DatasetPipeline",
+    "ExternalPipeline",
+    "RawPipeline",
+    "init_external",
+    "init_pipeline",
+    "open_pipeline",
+    "steps",
+]

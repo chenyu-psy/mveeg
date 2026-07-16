@@ -1,106 +1,97 @@
 # mveeg
 
-**Multivariate encoding and decoding models for EEG research.**
+`mveeg` 0.3.0 provides manifest-backed EEG preparation, multivariate decoding,
+and multivariate encoding. The three scientific pipelines are independent and
+share only dataset, trial-selection, epoch-window, topography, provenance, and
+result-storage mechanics whose semantics are identical.
 
-`mveeg` is a reusable Python package for building and evaluating
-multivariate encoding and decoding models, with a focus on EEG analysis
-workflows in psychology and cognitive neuroscience.
+Every dataset and result uses `subject_index + epoch_index` as trial identity.
+Columns such as `subject`, `participant`, and `trial` remain ordinary experiment
+metadata.
 
----
-
-## What it includes
-
-| Sub-package | Purpose |
-|---|---|
-| `mveeg.encoding` | Trial-metadata regression models, pattern expression, and model comparison |
-| `mveeg.decoding` | LDA, logistic regression, and cross-validated classification |
-| `mveeg.prep` | EEG helpers that produce model-ready arrays |
-| `mveeg.io` | Loading and saving model inputs / outputs |
-| `mveeg.summaries` | Group-level summaries and reporting helpers |
-| `mveeg.validation` | Input validation (trial counts, array shapes, …) |
-
-## What it intentionally does *not* include
-
-- RSA / representational similarity analysis
-- Project-specific constants, condition maps, or file paths
-- Notebook logic or one-off dataset conversion scripts
-
----
-
-## Installation (editable mode)
+## Installation
 
 ```bash
-# from the repository root
 uv pip install -e .
 ```
 
-Or add it as an editable path dependency from another project's
-`pyproject.toml`:
+Python 3.10 or newer is required.
 
-```toml
-[tool.uv.sources]
-mveeg = { path = "../mveeg", editable = true }
-```
+## Quickstart
 
----
-
-## Quick start
+Build a prepared dataset lazily from continuous recordings:
 
 ```python
-import mveeg
-print(mveeg.__version__)
+from mveeg import prep
 
-# Validate trial count before fitting
-from mveeg.validation import check_trial_count
-check_trial_count(n_trials=80)   # passes silently; raises ValueError if too few
+raw = prep.init_pipeline("data/raw")
+raw.load_eeg("*.vhdr")
+raw.make_epochs(
+    event_id={"stimulus": 1},
+    time_window=(-0.2, 1.0),
+    baseline=(-0.2, 0),
+)
+raw.transform_metadata(is_target=lambda frame: frame["event_name"].eq("stimulus"))
+prepared = raw.build_epochs("data/prepared", task="memory")
 ```
 
-## Encoding regression models
-
-`mveeg.encoding.workflow.run_regression_model` fits cross-validated EEG
-regression models from trial metadata. Use `assign_metadata` to add reusable
-numeric predictors before the formula is evaluated.
+Or normalize externally prepared epochs eagerly:
 
 ```python
-from mveeg.encoding.metadata import assign_metadata
-from mveeg.encoding.workflow import run_regression_model
+external = prep.init_external(subject_index="4001", data=epochs)
+external.merge_metadata(metadata)
+prepared = external.build_epochs("data/prepared", task="memory")
+```
 
-metadata_assign = assign_metadata(
-    load=lambda df: df["model_condition"].eq("high_load").astype(float),
+Preprocess a prepared dataset through its dataset pipeline:
+
+```python
+prepared = prep.open_pipeline("data/prepared")
+preprocessed = prepared.preprocess_epochs(
+    "data/preprocessed",
+    eligibility=eligibility_config,
+    autoreject=autoreject_config,
+    recompute="changed",
+)
+preprocessed.label_artifacts(reject=reject_rules, review=review_rules)
+```
+
+Run decoding or encoding from an explicit dataset root:
+
+```python
+from mveeg import decoding, encoding
+
+decoder = decoding.init_pipeline("data/preprocessed")
+decoder.prepare_epochs(crop=(-0.2, 0.8), time_bin=50)
+decoder.setup_cv(folds=5, repeats=20, seed=1)
+decoder.decode(
+    target="condition",
+    classes={"low": ["SS2"], "high": ["SS4"]},
+    file="results/decoding.duckdb",
 )
 
-tables = run_regression_model(
-    data_dir="data/preprocessed/exp1",
-    subject_ids=["001", "002"],
-    trial_filters={
-        "qc_col": "qc_pass",
-        "keep_qc": [True],
-        "exclude_metadata": {},
-    },
-    encoding_params={
-        "crop_time": (-0.2, 1.0),
-        "drop_channel_types": [],
-        "drop_channels": [],
-        "time_window_ms": 50,
-    },
-    condition_label_map={"high_load": ["SS4"], "low_load": ["SS2"]},
-    metadata_assign=metadata_assign,
-    formula="pattern ~ 1 + load + (1 | model_condition)",
-    penalty={"fixed": 1.0, "random": 0.1},
-    overwrite=False,
-    name="load_model",
+encoder = encoding.init_pipeline("data/preprocessed")
+encoder.transform_metadata(
+    color=lambda frame: frame["color_count"].gt(0).astype(float),
+    number=lambda frame: frame["number_count"].gt(0).astype(float),
+)
+encoder.encode(
+    formula="1 + color + number",
+    target="condition",
+    conditions={"color": ["color"], "number": ["number"]},
+    file="results/encoding.duckdb",
 )
 ```
 
-Formulas select numeric trial-level metadata columns. Additive terms,
-interactions such as `load * cue`, and random intercepts such as
-`(1 | model_condition)` are supported.
+## Documentation
 
----
+- [Dataset and metadata contract](docs/dataset.md)
+- [Raw-data preparation](docs/preprocessing-raw.md)
+- [External-data preparation](docs/preprocessing-external.md)
+- [Quality, AutoReject, and review](docs/quality.md)
+- [Common DuckDB result contract](docs/results.md)
+- [Decoding](docs/decoding.md)
+- [Encoding](docs/encoding.md)
 
-## Development
-
-```bash
-uv sync              # create / update the virtual environment
-uv run pytest        # run the test suite
-```
+The root namespace intentionally exposes only `prep`, `decoding`, `encoding`,
+and `__version__`.

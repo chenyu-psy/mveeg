@@ -1,5 +1,5 @@
-"""Encoding package.
+"""Independent pipeline for multivariate linear EEG encoding."""
 
-Import from explicit submodules in this package, such as
-``mveeg.encoding.io`` or ``mveeg.encoding.workflow``.
-"""
+from ._pipeline import EncodingPipeline, init_pipeline
+
+__all__ = ["EncodingPipeline", "init_pipeline"]
