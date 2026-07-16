@@ -30,7 +30,13 @@ class _Operation:
 
     def spec(self) -> dict[str, object]:
         """Return the serializable portion used in provenance and fingerprints."""
-        return {"step": self.kind, **self.params}
+        params = dict(self.params)
+        if self.kind == "make_epochs":
+            for name in ("trial_sequences", "time_zero"):
+                mapping = params.get(name)
+                if isinstance(mapping, Mapping):
+                    params[name] = {str(key): value for key, value in mapping.items()}
+        return {"step": self.kind, **params}
 
 
 class RawPipeline:

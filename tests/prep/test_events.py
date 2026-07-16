@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import inspect
+import json
 
 import mne
 import numpy as np
 import pytest
 
+from mveeg._provenance import fingerprint
 from mveeg.prep import RawPipeline, steps
 
 EVENT_ID = {
@@ -228,8 +230,16 @@ def test_raw_pipeline_validates_and_resolves_default_time_zero_at_registration(t
         trial_sequences=TRIAL_SEQUENCES,
     )
 
+    make_operation = pipeline._operations[0]
+    assert make_operation.params["trial_sequences"] == TRIAL_SEQUENCES
+    assert make_operation.params["time_zero"] == {10: 10, 20: 20}
+
     make_spec = pipeline._pipeline_spec()["steps"][0]
-    assert make_spec["time_zero"] == {10: 10, 20: 20}
+    assert make_spec["trial_sequences"] == {
+        "10": (1, 10, 2, 3),
+        "20": ((1, 20, 2, 3), (1, 20, 3, 2)),
+    }
+    assert make_spec["time_zero"] == {"10": 10, "20": 20}
 
     for invalid_window in ((np.nan, 1), (-1, np.inf)):
         candidate = RawPipeline(tmp_path).load_eeg()
@@ -247,3 +257,33 @@ def test_raw_pipeline_validates_and_resolves_default_time_zero_at_registration(t
                 time_window=(-0.04, 0.04),
                 sampling_rate=invalid_rate,
             )
+
+
+def test_raw_pipeline_builds_sequence_dataset_with_serializable_event_codes(
+    tmp_path,
+    monkeypatch,
+):
+    input_dir = tmp_path / "raw"
+    subject_dir = input_dir / "sub4001"
+    subject_dir.mkdir(parents=True)
+    (subject_dir / "sub4001_raw.fif").write_bytes(b"source")
+
+    pipeline = RawPipeline(input_dir).load_eeg("*.fif")
+    pipeline.make_epochs(
+        event_id=EVENT_ID,
+        time_window=(-0.04, 0.04),
+        trial_sequences=TRIAL_SEQUENCES,
+        events=EVENTS,
+        baseline=None,
+    )
+    monkeypatch.setattr(pipeline, "_load_eeg", lambda subject_dir: _raw())
+
+    dataset = pipeline.build_epochs(tmp_path / "prepared", task="test", progress=False)
+    provenance = json.loads((dataset.root / "provenance.json").read_text())
+
+    assert provenance["schema_version"] == 2
+    assert provenance["pipeline_fingerprint"] == fingerprint(pipeline._pipeline_spec())
+    assert set(provenance["pipeline"]["steps"][0]["trial_sequences"]) == {"10", "20"}
+    assert provenance["pipeline"]["steps"][0]["time_zero"] == {"10": 10, "20": 20}
+    assert dataset.subject_indices == ("4001",)
+    assert len(dataset.load_epochs("4001")) == 2
