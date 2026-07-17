@@ -197,17 +197,13 @@ def _aggregate_accuracy(
 ) -> pd.DataFrame:
     values = ["n_correct", "n_trials"]
     if "target_evidence" in table:
-        table = table.assign(
-            target_evidence_sum=table["target_evidence"] * table["n_trials"]
-        )
+        table = table.assign(target_evidence_sum=table["target_evidence"] * table["n_trials"])
         values.append("target_evidence_sum")
     summarized = table.groupby(keys, as_index=False, sort=sort)[values].sum()
     summarized["accuracy"] = summarized["n_correct"] / summarized["n_trials"]
     columns = [*keys, "accuracy", "n_correct", "n_trials"]
     if "target_evidence_sum" in summarized:
-        summarized["target_evidence"] = (
-            summarized["target_evidence_sum"] / summarized["n_trials"]
-        )
+        summarized["target_evidence"] = summarized["target_evidence_sum"] / summarized["n_trials"]
         columns.append("target_evidence")
     return summarized[columns]
 

@@ -7,7 +7,8 @@
 1. Create feature and fix branches from `origin/develop`.
 2. Open pull requests from feature and fix branches into `develop`.
 3. Merge accepted work into `develop`.
-4. Before releasing, update the package version on `develop`.
+4. Before releasing, update the package version and `RELEASE_NOTES.md` on a
+   release-preparation branch, then merge that branch into `develop`.
 5. Open a pull request from `develop` into `main`.
 6. Merging into `main` runs CI, builds the package, and creates a GitHub Release.
 
@@ -16,8 +17,9 @@ integration and release branches and should only change through pull requests.
 
 ## Version Updates
 
-The package version has one source of truth: `pyproject.toml`. Update it on
-`develop` before opening the release pull request into `main`.
+The package version has one source of truth: `pyproject.toml`. Update it and
+`RELEASE_NOTES.md` through a pull request into `develop` before opening the
+release pull request from `develop` into `main`.
 
 GitHub Releases use tags derived from the project version, such as `v0.1.1`.
 If a tag or release for the current version already exists, the release workflow

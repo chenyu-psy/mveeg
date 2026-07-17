@@ -276,14 +276,10 @@ def test_incremental_mean_matches_fold_level_results():
     detailed_generalization = detailed["generalization"].assign(
         target_evidence_sum=lambda frame: frame["target_evidence"] * frame["n_trials"]
     )
-    expected_generalization = (
-        detailed_generalization
-        .groupby(
-            ["subject_index", "condition", "train_time", "test_time", "permutation"],
-            as_index=False,
-        )[["n_correct", "n_trials", "target_evidence_sum"]]
-        .sum()
-    )
+    expected_generalization = detailed_generalization.groupby(
+        ["subject_index", "condition", "train_time", "test_time", "permutation"],
+        as_index=False,
+    )[["n_correct", "n_trials", "target_evidence_sum"]].sum()
     expected_generalization["accuracy"] = (
         expected_generalization["n_correct"] / expected_generalization["n_trials"]
     )
@@ -784,9 +780,12 @@ def test_pipeline_writes_public_duckdb_and_reuses_completed_subjects(tmp_path):
             ).fetchone()[0]
             == "DOUBLE"
         )
-        assert connection.execute(
-            "SELECT COUNT(*) FROM generalization WHERE target_evidence IS NULL"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM generalization WHERE target_evidence IS NULL"
+            ).fetchone()[0]
+            == 0
+        )
         assert connection.execute(
             "SELECT DISTINCT condition FROM generalization ORDER BY condition"
         ).fetchall() == [("a",), ("b",), ("c",), ("x",)]
