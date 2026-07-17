@@ -63,4 +63,4 @@ jobs:
           gh release create "${TAG}" dist/* \
             --target "${GITHUB_SHA}" \
             --title "mveeg ${VERSION}" \
-            --notes "Automated GitHub release for mveeg ${VERSION}."
+            --notes-file RELEASE_NOTES.md

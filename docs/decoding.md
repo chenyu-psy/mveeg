@@ -51,12 +51,12 @@ must include every raw value used by `classes`.
 `generalization` is independent of `evidence`. It accepts `None` or a mapping
 from classifier labels to raw values in the same post-transform `target`
 column. Its keys must exist in `classes`; a subset is allowed. Each raw value
-produces its own temporal-generalization matrix and may be absent from
-`evidence`. A raw value may appear under only one generalization label, but its
-training label may differ because the two mappings describe different
-scientific roles. Combine raw conditions with `transform_metadata()` before
-decoding when they should form one scientific condition. Boolean values and an
-implicit "all" mode are not accepted.
+produces its own temporal-generalization accuracy and target-evidence matrices
+and may be absent from `evidence`. A raw value may appear under only one
+generalization label, but its training label may differ because the two
+mappings describe different scientific roles. Combine raw conditions with
+`transform_metadata()` before decoding when they should form one scientific
+condition. Boolean values and an implicit "all" mode are not accepted.
 
 `transform_metadata()` accepts only named variable definitions. Each value is
 a function that receives the current metadata DataFrame and returns one scalar
@@ -89,6 +89,9 @@ without truncation, reordering, normalization, or sign changes. Binary output
 is a scalar `DOUBLE`; multiclass output is a `DOUBLE[]` whose shape is recorded
 in `classifier.evidence_shape`. Users who alter classifier parameters are
 responsible for interpreting that estimator's native decision geometry.
+Multiclass temporal generalization requires one score per class, so
+`linear_svm` with `decision_function_shape="ovo"` remains available for
+ordinary decoding but is rejected when `generalization` is configured.
 
 ## Cross-validation
 
@@ -110,8 +113,18 @@ enter the analysis fingerprint.
 At each fold and training time, one fitted model supplies observed accuracy,
 raw confusion counts, classifier evidence, and Haufe patterns. When a
 `generalization` mapping is present, that same model is additionally evaluated
-at every test time for each listed target condition. Generalization produces
-accuracy only; it does not create a second evidence output.
+at every test time for each listed target condition. Generalization stores both
+accuracy and one target-directed evidence contrast per matrix cell. For a
+multiclass score vector, target evidence is
+
+```text
+S_target - mean(S_other classes)
+```
+
+For binary classifiers, the native scalar already represents the class-1
+versus class-0 contrast: it is retained for a class-1 target and negated for a
+class-0 target. `classifier_evidence` remains the unchanged classifier-native
+trial-level output; `target_evidence` is a derived generalization summary.
 
 Training-class trials receive evidence only from the model that held them out.
 Evidence-only trials are never used for fitting and receive evidence from all
@@ -148,7 +161,7 @@ labels define training and same-time held-out testing. Generalization targets
 always remain fixed by the generalization mapping, including for trials that
 also belong to the training pool. A shuffle that cannot form every requested
 training average is redrawn. Permutations produce only accuracy and, when
-enabled, generalization accuracy.
+enabled, generalization accuracy and target evidence.
 
 ## DuckDB tables
 
@@ -168,15 +181,16 @@ Result tables for `output="mean"`:
 - `classifier_evidence(subject_index, epoch_index, time, evidence, n_models)`
 - `confusion_matrix(subject_index, time, actual, predicted, count)`
 - `patterns(subject_index, time, channel, component, pattern)`
-- `generalization(subject_index, condition, train_time, test_time, permutation, accuracy, n_correct, n_trials)`
+- `generalization(subject_index, condition, train_time, test_time, permutation, accuracy, n_correct, n_trials, target_evidence)`
 
 For `output="all"`, `accuracy`, `confusion_matrix`, `patterns`, and
 `generalization` add `repeat, fold`; `classifier_evidence` uses
 `subject_index, epoch_index, repeat, fold, time, evidence`. The `generalization` table is
 not created when `generalization=None`. Its `condition` column preserves the
 post-transform target value, and mean accuracy is weighted from accumulated
-`n_correct` and `n_trials`. Confusion values are accumulated raw counts and are
-never normalized.
+`n_correct` and `n_trials`. Mean target evidence is weighted by the same
+`n_trials`, which counts trial-model evaluations. Confusion values are
+accumulated raw counts and are never normalized.
 
 ## Incremental execution
 
@@ -194,6 +208,10 @@ Each subject's result rows are committed together. `subjects.status` is
 `pending`, `complete`, or `failed`; failures keep their reason. There is no
 fold-level checkpoint. Subjects that do not need recomputation are reused
 without loading their epochs or displaying a progress bar.
+
+Decoding result schema 2 adds `generalization.target_evidence`. Schema-1 files
+are rejected by default; `recompute="all"` may replace a known schema-1 file
+transactionally with complete schema-2 results.
 
 Common transaction, version, fixed-column, and unitless channel-coordinate
 rules are documented once in the [DuckDB result contract](results.md).

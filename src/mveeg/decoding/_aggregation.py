@@ -87,6 +87,7 @@ def combine_all(
                         "accuracy",
                         "n_correct",
                         "n_trials",
+                        "target_evidence",
                     ]
                 ]
                 .reset_index(drop=True)
@@ -164,9 +165,7 @@ def _summarize_repeat_accuracy(
     time_columns: list[str],
 ) -> pd.DataFrame:
     keys = ["subject_index", "repeat", *time_columns, "permutation"]
-    summarized = table.groupby(keys, as_index=False, sort=False)[["n_correct", "n_trials"]].sum()
-    summarized["accuracy"] = summarized["n_correct"] / summarized["n_trials"]
-    return summarized[[*keys, "accuracy", "n_correct", "n_trials"]]
+    return _aggregate_accuracy(table, keys, sort=False)
 
 
 def _summarize_repeat_evidence(table: pd.DataFrame) -> pd.DataFrame:
@@ -187,9 +186,26 @@ def _summarize_repeat_evidence(table: pd.DataFrame) -> pd.DataFrame:
 
 def _combine_mean_accuracy(table: pd.DataFrame, time_columns: list[str]) -> pd.DataFrame:
     keys = ["subject_index", *time_columns, "permutation"]
-    counts = table.groupby(keys, as_index=False, sort=True)[["n_correct", "n_trials"]].sum()
-    counts["accuracy"] = counts["n_correct"] / counts["n_trials"]
-    return counts[[*keys, "accuracy", "n_correct", "n_trials"]]
+    return _aggregate_accuracy(table, keys, sort=True)
+
+
+def _aggregate_accuracy(
+    table: pd.DataFrame,
+    keys: list[str],
+    *,
+    sort: bool,
+) -> pd.DataFrame:
+    values = ["n_correct", "n_trials"]
+    if "target_evidence" in table:
+        table = table.assign(target_evidence_sum=table["target_evidence"] * table["n_trials"])
+        values.append("target_evidence_sum")
+    summarized = table.groupby(keys, as_index=False, sort=sort)[values].sum()
+    summarized["accuracy"] = summarized["n_correct"] / summarized["n_trials"]
+    columns = [*keys, "accuracy", "n_correct", "n_trials"]
+    if "target_evidence_sum" in summarized:
+        summarized["target_evidence"] = summarized["target_evidence_sum"] / summarized["n_trials"]
+        columns.append("target_evidence")
+    return summarized[columns]
 
 
 def _combine_mean_evidence(table: pd.DataFrame) -> pd.DataFrame:

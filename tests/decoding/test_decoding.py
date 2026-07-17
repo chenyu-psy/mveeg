@@ -14,6 +14,7 @@ import mveeg.decoding._analysis as decoding_analysis
 from mveeg._dataset.store import DatasetBuilder
 from mveeg.decoding import DecodingPipeline, init_pipeline
 from mveeg.decoding._analysis import decode_subject
+from mveeg.decoding._models import target_evidence
 from mveeg.decoding._prepare import (
     average_training_trials,
     sample_balanced,
@@ -50,6 +51,43 @@ def _trial_roles(labels: np.ndarray, *, generalization: bool) -> dict[str, np.nd
     }
 
 
+class _DecisionModel:
+    def __init__(self, classes, values, *, shape=None):
+        self.classes_ = np.asarray(classes, dtype=object)
+        self.values = np.asarray(values, dtype=float)
+        if shape is not None:
+            self.decision_function_shape = shape
+
+    def decision_function(self, data):
+        return self.values[: len(data)]
+
+
+def test_target_evidence_uses_binary_contrasts_and_multiclass_target_vs_rest():
+    data = np.zeros((2, 1))
+    binary = _DecisionModel(["a", "b"], [-2.0, 0.5])
+    np.testing.assert_allclose(
+        target_evidence(binary, data, np.array(["a", "b"], dtype=object)),
+        [2.0, 0.5],
+    )
+
+    multiclass = _DecisionModel(
+        ["a", "b", "c"],
+        [[3.0, 1.0, 2.0], [1.0, 5.0, 2.0]],
+    )
+    np.testing.assert_allclose(
+        target_evidence(multiclass, data, np.array(["a", "c"], dtype=object)),
+        [1.5, -1.0],
+    )
+
+    ovo = _DecisionModel(
+        ["a", "b", "c"],
+        [[3.0, 1.0, 2.0], [1.0, 5.0, 2.0]],
+        shape="ovo",
+    )
+    with pytest.raises(ValueError, match="one-vs-rest"):
+        target_evidence(ovo, data, np.array(["a", "c"], dtype=object))
+
+
 def test_multiclass_all_output_preserves_native_geometry_and_cv_rows():
     data, labels, trials = _subject_data()
     result = decode_subject(
@@ -82,12 +120,26 @@ def test_multiclass_all_output_preserves_native_geometry_and_cv_rows():
     assert set(result.tables["accuracy"]["permutation"]) == {0, 1}
     assert set(result.tables["generalization"]["permutation"]) == {0, 1}
     assert set(result.tables["generalization"]["condition"]) == {"a", "b", "c", "generalization"}
+    assert np.isfinite(result.tables["generalization"]["target_evidence"]).all()
     assert set(
         result.tables["generalization"].query("condition == 'generalization'")["n_trials"]
     ) == {1}
     assert set(result.tables["generalization"].query("condition == 'a'")["n_trials"]) == {2}
     assert result.tables["classifier_evidence"].query("epoch_index == 13").empty
     assert "permutation" not in result.tables["patterns"]
+    assert result.tables["generalization"].columns.tolist() == [
+        "subject_index",
+        "condition",
+        "repeat",
+        "fold",
+        "train_time",
+        "test_time",
+        "permutation",
+        "accuracy",
+        "n_correct",
+        "n_trials",
+        "target_evidence",
+    ]
 
 
 def test_binary_mean_output_keeps_scalar_evidence_and_weighted_accuracy():
@@ -221,16 +273,18 @@ def test_incremental_mean_matches_fold_level_results():
     )
     pd.testing.assert_frame_equal(mean["patterns"], expected_patterns)
 
-    expected_generalization = (
-        detailed["generalization"]
-        .groupby(
-            ["subject_index", "condition", "train_time", "test_time", "permutation"],
-            as_index=False,
-        )[["n_correct", "n_trials"]]
-        .sum()
+    detailed_generalization = detailed["generalization"].assign(
+        target_evidence_sum=lambda frame: frame["target_evidence"] * frame["n_trials"]
     )
+    expected_generalization = detailed_generalization.groupby(
+        ["subject_index", "condition", "train_time", "test_time", "permutation"],
+        as_index=False,
+    )[["n_correct", "n_trials", "target_evidence_sum"]].sum()
     expected_generalization["accuracy"] = (
         expected_generalization["n_correct"] / expected_generalization["n_trials"]
+    )
+    expected_generalization["target_evidence"] = (
+        expected_generalization["target_evidence_sum"] / expected_generalization["n_trials"]
     )
     expected_generalization = expected_generalization[
         [
@@ -242,6 +296,7 @@ def test_incremental_mean_matches_fold_level_results():
             "accuracy",
             "n_correct",
             "n_trials",
+            "target_evidence",
         ]
     ]
     pd.testing.assert_frame_equal(mean["generalization"], expected_generalization)
@@ -297,7 +352,11 @@ def test_multiclass_linear_svm_patterns_follow_native_pairs():
         times=np.array([25, 75]),
         class_order=["a", "b", "c"],
         classifier="linear_svm",
-        classifier_parameters={"kernel": "linear", "probability": False},
+        classifier_parameters={
+            "kernel": "linear",
+            "probability": False,
+            "decision_function_shape": "ovo",
+        },
         folds=2,
         repeats=1,
         trial_averaging=1,
@@ -353,7 +412,7 @@ def test_builtin_classifiers_keep_native_binary_and_multiclass_evidence(
         subject="001",
         data=data,
         class_labels=labels,
-        **_trial_roles(labels, generalization=False),
+        **_trial_roles(labels, generalization=True),
         trial_ids=trials,
         times=np.array([25, 75]),
         class_order=class_order,
@@ -370,6 +429,7 @@ def test_builtin_classifiers_keep_native_binary_and_multiclass_evidence(
     assert result.classifier["evidence_shape"] == shape
     evidence = result.tables["classifier_evidence"]["evidence"]
     assert bool(evidence.map(np.isscalar).all()) == (shape == [])
+    assert np.isfinite(result.tables["generalization"]["target_evidence"]).all()
 
 
 def test_balancing_and_training_averages_drop_only_incomplete_training_groups():
@@ -626,6 +686,25 @@ def test_pipeline_transform_metadata_rejects_invalid_variable_definitions(tmp_pa
         pipeline.transform_metadata(subject_index=lambda frame: frame["subject_index"])
 
 
+def test_pipeline_rejects_multiclass_svm_ovo_before_creating_generalization_store(tmp_path):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    result_file = tmp_path / "decoding.duckdb"
+    pipeline = init_pipeline(dataset).setup_classifier(
+        classifier="linear_svm",
+        decision_function_shape="ovo",
+    )
+
+    with pytest.raises(ValueError, match="decision_function_shape='ovr'"):
+        pipeline.decode(
+            target="condition",
+            classes={"a": ["a"], "b": ["b"], "c": ["c"]},
+            generalization={"a": ["a"], "b": ["b"], "c": ["c"]},
+            file=result_file,
+        )
+
+    assert not result_file.exists()
+
+
 def test_pipeline_init_rejects_inconsistent_dataset_identity(tmp_path):
     dataset = _build_dataset(tmp_path / "dataset", ["001"])
     path = dataset / "provenance.json"
@@ -692,6 +771,20 @@ def test_pipeline_writes_public_duckdb_and_reuses_completed_subjects(tmp_path):
                 "SELECT column_type FROM (DESCRIBE analysis) WHERE column_name='generalization'"
             ).fetchone()[0]
             == "JSON"
+        )
+        assert connection.execute("SELECT schema_version FROM analysis").fetchone()[0] == 2
+        assert (
+            connection.execute(
+                "SELECT column_type FROM (DESCRIBE generalization) "
+                "WHERE column_name='target_evidence'"
+            ).fetchone()[0]
+            == "DOUBLE"
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM generalization WHERE target_evidence IS NULL"
+            ).fetchone()[0]
+            == 0
         )
         assert connection.execute(
             "SELECT DISTINCT condition FROM generalization ORDER BY condition"
@@ -820,6 +913,32 @@ def test_pipeline_rejects_config_change_without_full_recompute(tmp_path):
         "n_correct",
         "n_trials",
     ]
+
+
+def test_schema1_requires_full_recompute(tmp_path):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    result_file = tmp_path / "decoding.duckdb"
+    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
+    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
+    settings = {
+        "target": "condition",
+        "classes": {"a": ["a"], "b": ["b"], "c": ["c"]},
+        "generalization": {"a": ["a"], "b": ["b"], "c": ["c"]},
+        "file": result_file,
+        "progress": False,
+    }
+    pipeline.decode(**settings)
+    with duckdb.connect(str(result_file)) as connection:
+        connection.execute("UPDATE analysis SET schema_version=1")
+
+    with pytest.raises(ValueError, match="schema 1"):
+        pipeline.decode(**settings)
+
+    pipeline.decode(**settings, recompute="all")
+    with duckdb.connect(str(result_file), read_only=True) as connection:
+        assert connection.execute("SELECT schema_version FROM analysis").fetchone()[0] == 2
+        columns = connection.execute("DESCRIBE generalization").df()["column_name"].tolist()
+    assert columns[-1] == "target_evidence"
 
 
 def test_generated_seed_is_reused_and_changed_inputs_are_recomputed(tmp_path):

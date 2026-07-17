@@ -11,8 +11,8 @@ Each `analysis` table contains separate columns:
 - `schema_version`, the incompatible result-format version;
 - `mveeg_version`, the package version that created the analysis.
 
-Decoding result schema and Encoding result schema are both currently 1. Schema
-versions change only for incompatible stored-format changes.
+Decoding result schema is currently 2 and Encoding result schema is currently
+1. Schema versions change only for incompatible stored-format changes.
 
 Both files contain:
 
