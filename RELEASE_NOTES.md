@@ -18,12 +18,3 @@ analysis results together from preparation through publication.
   model diagnostics.
 - Resume subject-level analyses and write results transactionally to portable
   DuckDB files with explicit schemas and package versions.
-
-## Installation
-
-Python 3.10 or newer and MNE 1.12 or newer are required. Install the release
-wheel directly from GitHub:
-
-```bash
-python -m pip install https://github.com/chenyu-psy/mveeg/releases/download/v0.3.0/mveeg-0.3.0-py3-none-any.whl
-```

@@ -17,14 +17,14 @@ parts your study needs.
 
 ## Installation
 
-Install mveeg 0.3.0 directly from its GitHub Release:
+Install the latest stable version from the GitHub repository's default branch:
 
 ```bash
-python -m pip install https://github.com/chenyu-psy/mveeg/releases/download/v0.3.0/mveeg-0.3.0-py3-none-any.whl
+python -m pip install git+https://github.com/chenyu-psy/mveeg.git
 ```
 
-Python 3.10 or newer is required. Runtime dependencies, including MNE 1.12 or
-newer, are installed automatically.
+This installation requires Git. Python 3.10 or newer is required. Runtime
+dependencies, including MNE 1.12 or newer, are installed automatically.
 
 Check the installed version:
 
