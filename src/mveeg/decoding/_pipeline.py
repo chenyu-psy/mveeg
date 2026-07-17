@@ -30,6 +30,7 @@ from ._prepare import (
     validate_groups,
 )
 from ._storage import (
+    _LegacyDecodingSchema,
     completed_subjects,
     initialize_store,
     mark_failed,
@@ -207,8 +208,25 @@ class DecodingPipeline:
             raise TypeError("progress must be bool.")
         class_map, evidence_map = validate_groups(classes, evidence)
         generalization_map = validate_generalization(class_map, generalization)
+        if (
+            generalization_map is not None
+            and len(class_map) > 2
+            and self._classifier["name"] == "linear_svm"
+            and self._classifier["parameters"].get("decision_function_shape", "ovr") == "ovo"
+        ):
+            raise ValueError(
+                "Multiclass generalization target evidence requires "
+                "linear_svm decision_function_shape='ovr'."
+            )
         path = result_path(file)
-        existing = read_analysis(path)
+        reset = False
+        try:
+            existing = read_analysis(path)
+        except _LegacyDecodingSchema:
+            if recompute != "all":
+                raise
+            existing = None
+            reset = True
         seed = self._cv["seed"]
         if seed is None:
             seed = int(existing["seed"]) if existing is not None else secrets.randbelow(2**63 - 1)
@@ -233,7 +251,6 @@ class DecodingPipeline:
             "output": output,
         }
         analysis_fingerprint = fingerprint(config)
-        reset = False
         if existing is not None and existing["fingerprint"] != analysis_fingerprint:
             if recompute != "all":
                 raise ValueError(

@@ -13,7 +13,13 @@ from sklearn.preprocessing import StandardScaler
 from tqdm.auto import tqdm
 
 from ._aggregation import combine_all, combine_mean, summarize_repeat
-from ._models import haufe_patterns, make_classifier, native_evidence, pattern_components
+from ._models import (
+    haufe_patterns,
+    make_classifier,
+    native_evidence,
+    pattern_components,
+    target_evidence,
+)
 from ._prepare import average_training_trials, sample_balanced
 
 
@@ -437,11 +443,13 @@ def _generalization_row(
     permutation: int,
     n_correct: int,
     n_trials: int,
+    target_evidence_value: float,
 ) -> dict[str, object]:
     row = _accuracy_row(subject, repeat, fold, train_time, permutation, n_correct, n_trials)
     row["condition"] = condition
     row["train_time"] = row.pop("time")
     row["test_time"] = test_time
+    row["target_evidence"] = target_evidence_value
     return row
 
 
@@ -465,7 +473,9 @@ def _append_generalization(
     for condition, rows in condition_rows:
         actual = actual_labels[rows]
         for test_time_index, test_time in enumerate(times):
-            predicted = model.predict(scaler.transform(data[rows, :, test_time_index]))
+            test_data = scaler.transform(data[rows, :, test_time_index])
+            predicted = model.predict(test_data)
+            evidence = target_evidence(model, test_data, actual)
             output.append(
                 _generalization_row(
                     subject,
@@ -477,6 +487,7 @@ def _append_generalization(
                     permutation,
                     int(np.sum(predicted == actual)),
                     len(rows),
+                    float(evidence.mean()),
                 )
             )
 

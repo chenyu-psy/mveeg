@@ -29,7 +29,7 @@ from .._results.store import (
     mark_pending as _mark_pending,
 )
 
-RESULT_SCHEMA_VERSION = 1
+RESULT_SCHEMA_VERSION = 2
 SUBJECT_TABLES = (
     "trials",
     "accuracy",
@@ -63,6 +63,7 @@ MEAN_COLUMNS = {
         "accuracy",
         "n_correct",
         "n_trials",
+        "target_evidence",
     ),
 }
 ALL_COLUMNS = {
@@ -90,8 +91,13 @@ ALL_COLUMNS = {
         "accuracy",
         "n_correct",
         "n_trials",
+        "target_evidence",
     ),
 }
+
+
+class _LegacyDecodingSchema(ValueError):
+    """Known decoding schema that may be replaced by a full recomputation."""
 
 
 def result_path(file: str | Path) -> Path:
@@ -104,7 +110,14 @@ def read_analysis(path: Path) -> dict[str, object] | None:
     row = read_analysis_row(path, analysis="decoding")
     if row is None:
         return None
-    if tuple(row) != ANALYSIS_COLUMNS or row.get("schema_version") != RESULT_SCHEMA_VERSION:
+    if tuple(row) != ANALYSIS_COLUMNS:
+        raise ValueError("Unsupported decoding result schema; regenerate the result file.")
+    if row.get("schema_version") == 1:
+        raise _LegacyDecodingSchema(
+            "Decoding result schema 1 is incompatible with schema 2; "
+            "use another file or recompute='all' to regenerate it."
+        )
+    if row.get("schema_version") != RESULT_SCHEMA_VERSION:
         raise ValueError("Unsupported decoding result schema; regenerate the result file.")
     return row
 

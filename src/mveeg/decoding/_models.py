@@ -48,6 +48,37 @@ def native_evidence(model, data: np.ndarray) -> tuple[np.ndarray, list[int]]:
     return values, shape
 
 
+def target_evidence(model, data: np.ndarray, targets: np.ndarray) -> np.ndarray:
+    """Return one target-vs-rest decision contrast per trial."""
+
+    target_labels = np.asarray(targets, dtype=object)
+    classes = np.asarray(model.classes_, dtype=object)
+    if target_labels.ndim != 1 or len(target_labels) != len(data):
+        raise ValueError("Target labels must be one-dimensional and match the data rows.")
+    unknown = sorted(set(target_labels.tolist()).difference(classes.tolist()))
+    if unknown:
+        raise ValueError(f"Target labels are not classifier classes: {unknown}.")
+
+    values = np.asarray(model.decision_function(data), dtype=float)
+    if values.ndim == 1:
+        if len(classes) != 2:
+            raise ValueError("Scalar decision evidence requires exactly two classifier classes.")
+        return np.where(target_labels == classes[1], values, -values)
+
+    if getattr(model, "decision_function_shape", None) == "ovo":
+        raise ValueError(
+            "Multiclass target evidence requires one-vs-rest decision scores; "
+            "decision_function_shape='ovo' is unsupported."
+        )
+    if values.ndim != 2 or values.shape != (len(target_labels), len(classes)):
+        raise ValueError("Multiclass decision evidence must provide one score per class.")
+    indices = {label: index for index, label in enumerate(classes)}
+    target_indices = np.asarray([indices[label] for label in target_labels], dtype=int)
+    target_values = values[np.arange(len(values)), target_indices]
+    other_mean = (values.sum(axis=1) - target_values) / (len(classes) - 1)
+    return target_values - other_mean
+
+
 def haufe_patterns(
     raw_training: np.ndarray,
     scaled_training: np.ndarray,
