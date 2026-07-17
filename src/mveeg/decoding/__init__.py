@@ -1,5 +1,5 @@
-"""
-Decoding models.
+"""Independent pipeline for multiclass EEG decoding."""
 
-Planned: LDA, logistic regression, and cross-validated classification pipelines.
-"""
+from ._pipeline import DecodingPipeline, init_pipeline
+
+__all__ = ["DecodingPipeline", "init_pipeline"]

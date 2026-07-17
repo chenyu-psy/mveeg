@@ -1,5 +1,5 @@
-"""
-Encoding models.
+"""Independent pipeline for multivariate linear EEG encoding."""
 
-Planned: temporal response functions (TRF), ridge-regression encoding models.
-"""
+from ._pipeline import EncodingPipeline, init_pipeline
+
+__all__ = ["EncodingPipeline", "init_pipeline"]

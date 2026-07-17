@@ -1,65 +1,143 @@
 # mveeg
 
-**Multivariate encoding and decoding models for EEG research.**
+`mveeg` is a Python package for preparing EEG datasets and running multivariate
+decoding or encoding analyses. It keeps trial metadata and processing history
+with the data, makes subject-level analyses easy to resume, and writes results
+to portable DuckDB files.
 
-`mveeg` is a reusable Python package for building and evaluating
-multivariate encoding and decoding models, with a focus on EEG analysis
-workflows in psychology and cognitive neuroscience.
+Preparation, decoding, and encoding are independent workflows. Use only the
+parts your study needs.
 
----
+## What mveeg helps you do
 
-## What it includes
+- Build consistent datasets from continuous recordings or existing MNE Epochs.
+- Apply eligibility checks, AutoReject, artifact rules, and manual review.
+- Run multivariate decoding, temporal generalization, or linear encoding.
+- Keep trial identity and provenance consistent from preparation to results.
 
-| Sub-package | Purpose |
-|---|---|
-| `mveeg.encoding` | Temporal response functions and linear encoding models |
-| `mveeg.decoding` | LDA, logistic regression, and cross-validated classification |
-| `mveeg.preprocessing` | EEG helpers that produce model-ready arrays |
-| `mveeg.io` | Loading and saving model inputs / outputs |
-| `mveeg.summaries` | Group-level summaries and reporting helpers |
-| `mveeg.validation` | Input validation (trial counts, array shapes, …) |
+## Installation
 
-## What it intentionally does *not* include
-
-- RSA / representational similarity analysis
-- Project-specific constants, condition maps, or file paths
-- Notebook logic or one-off dataset conversion scripts
-
----
-
-## Installation (editable mode)
+Install the latest stable version from the GitHub repository's default branch:
 
 ```bash
-# from the repository root
-uv pip install -e .
+python -m pip install git+https://github.com/chenyu-psy/mveeg.git
 ```
 
-Or add it as an editable path dependency from another project's
-`pyproject.toml`:
+This installation requires Git. Python 3.10 or newer is required. Runtime
+dependencies, including MNE 1.12 or newer, are installed automatically.
 
-```toml
-[tool.uv.sources]
-mveeg = { path = "../mveeg", editable = true }
+Check the installed version:
+
+```bash
+python -c "import mveeg; print(mveeg.__version__)"
 ```
 
----
+## Quickstart
 
-## Quick start
+Choose the starting point that matches your data.
+
+### Start with continuous recordings
+
+Create a prepared dataset from subject folders containing BrainVision files:
 
 ```python
-import mveeg
-print(mveeg.__version__)
+from mveeg import prep
 
-# Validate trial count before fitting
-from mveeg.validation import check_trial_count
-check_trial_count(n_trials=80)   # passes silently; raises ValueError if too few
+pipeline = prep.init_pipeline("data/raw", subject_pattern="sub*")
+pipeline.load_eeg("*.vhdr", preload=False)
+pipeline.make_epochs(
+    event_id={"stimulus": 1},
+    time_window=(-0.2, 1.0),
+    baseline=(-0.2, 0),
+)
+prepared = pipeline.build_epochs("data/prepared", task="memory")
 ```
 
----
+The raw pipeline can also load EyeLink and behavioral data, synchronize trials,
+and create derived metadata before building the dataset.
 
-## Development
+### Start with existing MNE Epochs
 
-```bash
-uv sync              # create / update the virtual environment
-uv run pytest        # run the test suite
+If preprocessing begins in project code, add each subject's `mne.Epochs`
+directly:
+
+```python
+from mveeg import prep
+
+pipeline = prep.init_external(subject_index="4001", data=epochs)
+prepared = pipeline.build_epochs("data/prepared", task="memory")
 ```
+
+Use `merge_metadata()` before building when behavior is stored separately.
+
+### Preprocess and review the dataset
+
+Open a prepared dataset and write preprocessing output to a new dataset root:
+
+```python
+from mveeg import prep
+
+prepared = prep.open_pipeline("data/prepared")
+preprocessed = prepared.preprocess_epochs(
+    "data/preprocessed",
+    eligibility=eligibility_config,
+    autoreject=autoreject_config,
+    recompute="changed",
+)
+preprocessed.label_artifacts(reject=reject_rules, review=review_rules)
+```
+
+Eligibility thresholds and artifact rules are study-specific and should remain
+explicit in the study's analysis code.
+
+### Run decoding
+
+```python
+from mveeg import decoding
+
+pipeline = decoding.init_pipeline("data/preprocessed")
+pipeline.prepare_epochs(crop=(-0.2, 0.8), time_bin=50)
+pipeline.setup_cv(folds=5, repeats=20, trial_averaging=5, seed=1)
+pipeline.decode(
+    target="condition",
+    classes={"low": ["SS2"], "high": ["SS4"]},
+    file="results/decoding.duckdb",
+)
+```
+
+The decoding pipeline also supports QC-based trial selection, classifier
+evidence, permutations, and temporal generalization.
+
+### Run encoding
+
+```python
+from mveeg import encoding
+
+pipeline = encoding.init_pipeline("data/preprocessed")
+pipeline.transform_metadata(
+    color=lambda frame: frame["color_count"].gt(0).astype(float),
+    number=lambda frame: frame["number_count"].gt(0).astype(float),
+)
+pipeline.encode(
+    formula="1 + color + number",
+    target="condition",
+    conditions={"color": ["color"], "number": ["number"]},
+    file="results/encoding.duckdb",
+)
+```
+
+Encoding results include predictors, coefficients, pattern expression, and
+model diagnostics in the output DuckDB file.
+
+## Getting help
+
+If something is unclear or does not work as expected, open a
+[GitHub issue](https://github.com/chenyu-psy/mveeg/issues). Include the mveeg,
+Python, and MNE versions, a minimal example, and the full error message when
+possible.
+
+To work on mveeg itself, see [Contributing](CONTRIBUTING.md).
+
+## License
+
+mveeg is available under the [MIT License](LICENSE).
