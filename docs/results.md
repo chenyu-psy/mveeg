@@ -24,6 +24,9 @@ Status is `pending`, `complete`, or `failed`. Before recomputation, stale rows
 for that subject are deleted and the subject is marked pending. All trials,
 scientific results, and the final complete state are committed in one
 transaction. Failures retain a reason and no partial result rows.
+Preprocessing, Decoding, and Encoding stop on the first unhandled subject
+error. Result-producing model APIs record the failure before raising it;
+staged preprocessing datasets are aborted before the error is raised.
 
 ## Trials and fixed tables
 

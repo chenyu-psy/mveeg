@@ -290,8 +290,8 @@ class DecodingPipeline:
                     stacklevel=2,
                 )
 
-        def work(subject: str):
-            prepared = _prepare_subject(
+        def prepare(subject: str):
+            return _prepare_subject(
                 self,
                 subject=subject,
                 target=target,
@@ -300,7 +300,9 @@ class DecodingPipeline:
                 generalization=generalization_map,
                 store_metadata=stored_metadata,
             )
-            decoded = decode_subject(
+
+        def fit(subject: str, prepared):
+            return decode_subject(
                 subject=subject,
                 data=prepared["data"],
                 class_labels=prepared["class_labels"],
@@ -321,20 +323,32 @@ class DecodingPipeline:
                 n_jobs=n_jobs,
                 progress=progress,
             )
-            return prepared, decoded
 
         for subject in subjects:
             mark_pending(path, subject, fingerprints[subject])
+            phase = "preparation"
             try:
-                value = work(subject)
+                prepared = prepare(subject)
+                phase = "model fitting"
+                decoded = fit(subject, prepared)
+                phase = "result persistence"
+                _name_pattern_channels(decoded, prepared["channels"])
+                write_subject(
+                    path,
+                    subject=subject,
+                    fingerprint=fingerprints[subject],
+                    trials=prepared["trials"],
+                    tables=decoded.tables,
+                    classifier=decoded.classifier,
+                    components=decoded.pattern_components,
+                    channels=prepared["channels"],
+                    time_bins=prepared["time_bins"],
+                )
             except Exception as error:
                 mark_failed(path, subject, fingerprints[subject], str(error))
-                continue
-            _write_results(
-                path,
-                [(subject, (value, None))],
-                fingerprints,
-            )
+                raise RuntimeError(
+                    f"Decoding {phase} failed for subject {subject}: {error}"
+                ) from error
 
         if completed_subjects(path) == 0:
             raise RuntimeError(
@@ -441,29 +455,6 @@ def _prepare_subject(
         "channels": channels,
         "time_bins": time_bins,
     }
-
-
-def _write_results(path: Path, results, fingerprints: dict[str, str]) -> None:
-    for subject, (value, error) in results:
-        if error is not None:
-            mark_failed(path, subject, fingerprints[subject], str(error))
-            continue
-        prepared, decoded = value
-        try:
-            _name_pattern_channels(decoded, prepared["channels"])
-            write_subject(
-                path,
-                subject=subject,
-                fingerprint=fingerprints[subject],
-                trials=prepared["trials"],
-                tables=decoded.tables,
-                classifier=decoded.classifier,
-                components=decoded.pattern_components,
-                channels=prepared["channels"],
-                time_bins=prepared["time_bins"],
-            )
-        except Exception as error:
-            mark_failed(path, subject, fingerprints[subject], str(error))
 
 
 def _normalize_store_metadata(store_metadata: Sequence[str] | None) -> list[str] | None:

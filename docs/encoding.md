@@ -159,9 +159,11 @@ replaces the analysis.
 - `all` recomputes every manifest subject.
 
 Each subject is committed transactionally. A failure records its reason in
-`subjects` without partial result rows. Model comparison, time smoothing,
-Bayesian estimation, and cross-subject hierarchical models are outside the 0.3
-contract.
+`subjects` without partial result rows, then raises immediately with the
+subject identifier; later subjects are not attempted. A later call reuses
+completed subjects and retries failed and not-yet-attempted subjects. Model
+comparison, time smoothing, Bayesian estimation, and cross-subject
+hierarchical models are outside the 0.3 contract.
 
 Common transaction, version, fixed-column, and unitless channel-coordinate
 rules are documented once in the [DuckDB result contract](results.md).

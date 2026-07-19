@@ -217,6 +217,10 @@ Each subject's result rows are committed together. `subjects.status` is
 `pending`, `complete`, or `failed`; failures keep their reason. There is no
 fold-level checkpoint. Subjects that do not need recomputation are reused
 without loading their epochs or displaying a progress bar.
+An unhandled subject preparation, fitting, or persistence error is recorded as
+`failed` and then raised immediately with the subject identifier. Later
+subjects are not attempted; a later call reuses completed subjects and retries
+the failed and not-yet-attempted subjects.
 
 Decoding result schema 2 adds `generalization.target_evidence`. Schema-1 files
 are rejected by default; `recompute="all"` may replace a known schema-1 file

@@ -699,17 +699,14 @@ def test_pipeline_validates_stored_metadata_before_model_fitting(tmp_path, monke
         raise AssertionError("decode_subject must not run before metadata validation")
 
     monkeypatch.setattr(decoding_pipeline, "decode_subject", fail_if_called)
-    with pytest.raises(RuntimeError, match="No subject completed decoding"):
+    with pytest.raises(RuntimeError, match="unique ignoring case"):
         pipeline.decode(
             target="condition",
             classes={"a": ["a"], "b": ["b"], "c": ["c"]},
             file=tmp_path / "collision.duckdb",
             progress=False,
         )
-    with duckdb.connect(str(tmp_path / "collision.duckdb"), read_only=True) as connection:
-        reason = connection.execute("SELECT reason FROM subjects").fetchone()[0]
-    assert "unique ignoring case" in reason
-    with pytest.raises(RuntimeError, match="No subject completed decoding"):
+    with pytest.raises(RuntimeError, match="columns are missing"):
         pipeline.decode(
             target="condition",
             classes={"a": ["a"], "b": ["b"], "c": ["c"]},
@@ -717,9 +714,6 @@ def test_pipeline_validates_stored_metadata_before_model_fitting(tmp_path, monke
             file=tmp_path / "missing.duckdb",
             progress=False,
         )
-    with duckdb.connect(str(tmp_path / "missing.duckdb"), read_only=True) as connection:
-        reason = connection.execute("SELECT reason FROM subjects").fetchone()[0]
-    assert "columns are missing" in reason
 
 
 def test_pipeline_metadata_variable_values_enter_subject_fingerprint(tmp_path):
@@ -1074,7 +1068,7 @@ def test_failed_subject_is_recorded_without_partial_results(tmp_path):
     pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
     pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=3)
 
-    with pytest.raises(RuntimeError, match="No subject completed decoding"):
+    with pytest.raises(RuntimeError, match="failed for subject 001"):
         pipeline.decode(
             target="condition",
             classes={"a": ["a"], "b": ["b"], "missing": ["missing"]},
@@ -1100,6 +1094,114 @@ def test_failed_subject_is_recorded_without_partial_results(tmp_path):
     assert status == "failed"
     assert "missing" in reason
     assert tables == {"analysis", "subjects"}
+
+
+def test_pipeline_stops_after_first_subject_model_failure(tmp_path, monkeypatch):
+    dataset = _build_dataset(tmp_path / "dataset", ["001", "002", "003"])
+    result_file = tmp_path / "decoding.duckdb"
+    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
+    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
+    original = decoding_pipeline.decode_subject
+    calls = []
+
+    def fail_second(**kwargs):
+        calls.append(kwargs["subject"])
+        if kwargs["subject"] == "002":
+            raise ValueError("synthetic model failure")
+        return original(**kwargs)
+
+    monkeypatch.setattr(decoding_pipeline, "decode_subject", fail_second)
+    with pytest.raises(
+        RuntimeError,
+        match="Decoding model fitting failed for subject 002: synthetic model failure",
+    ):
+        pipeline.decode(
+            target="condition",
+            classes={"a": ["a"], "b": ["b"], "c": ["c"]},
+            file=result_file,
+            progress=False,
+        )
+
+    assert calls == ["001", "002"]
+    with duckdb.connect(str(result_file), read_only=True) as connection:
+        states = connection.execute(
+            "SELECT subject_index, status, reason FROM subjects ORDER BY subject_index"
+        ).fetchall()
+    assert states == [("001", "complete", None), ("002", "failed", "synthetic model failure")]
+
+
+def test_pipeline_stops_after_first_subject_preparation_failure(tmp_path, monkeypatch):
+    dataset = _build_dataset(tmp_path / "dataset", ["001", "002", "003"])
+    result_file = tmp_path / "decoding.duckdb"
+    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
+    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
+    original = decoding_pipeline._prepare_subject
+    calls = []
+
+    def fail_second(*args, **kwargs):
+        calls.append(kwargs["subject"])
+        if kwargs["subject"] == "002":
+            raise ValueError("synthetic preparation failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(decoding_pipeline, "_prepare_subject", fail_second)
+    with pytest.raises(
+        RuntimeError,
+        match="Decoding preparation failed for subject 002: synthetic preparation failure",
+    ):
+        pipeline.decode(
+            target="condition",
+            classes={"a": ["a"], "b": ["b"], "c": ["c"]},
+            file=result_file,
+            progress=False,
+        )
+
+    assert calls == ["001", "002"]
+    with duckdb.connect(str(result_file), read_only=True) as connection:
+        states = connection.execute(
+            "SELECT subject_index, status, reason FROM subjects ORDER BY subject_index"
+        ).fetchall()
+    assert states == [
+        ("001", "complete", None),
+        ("002", "failed", "synthetic preparation failure"),
+    ]
+
+
+def test_pipeline_stops_after_first_subject_persistence_failure(tmp_path, monkeypatch):
+    dataset = _build_dataset(tmp_path / "dataset", ["001", "002", "003"])
+    result_file = tmp_path / "decoding.duckdb"
+    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
+    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
+    original = decoding_pipeline.write_subject
+    calls = []
+
+    def fail_second(path, **kwargs):
+        calls.append(kwargs["subject"])
+        if kwargs["subject"] == "002":
+            raise ValueError("synthetic persistence failure")
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(decoding_pipeline, "write_subject", fail_second)
+    with pytest.raises(
+        RuntimeError,
+        match=("Decoding result persistence failed for subject 002: synthetic persistence failure"),
+    ):
+        pipeline.decode(
+            target="condition",
+            classes={"a": ["a"], "b": ["b"], "c": ["c"]},
+            file=result_file,
+            progress=False,
+        )
+
+    assert calls == ["001", "002"]
+    with duckdb.connect(str(result_file), read_only=True) as connection:
+        states = connection.execute(
+            "SELECT subject_index, status, reason FROM subjects ORDER BY subject_index"
+        ).fetchall()
+    assert states == [
+        ("001", "complete", None),
+        ("002", "failed", "synthetic persistence failure"),
+    ]
 
 
 def _epochs(subject: str) -> mne.EpochsArray:
