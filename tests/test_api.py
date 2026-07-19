@@ -19,7 +19,7 @@ def test_root_namespace_is_deliberately_small():
 
 
 def test_version_comes_from_project_metadata():
-    assert mveeg.__version__ == version("mveeg") == "0.3.0"
+    assert mveeg.__version__ == version("mveeg") == "0.3.1"
 
 
 def test_preprocessing_public_api():
