@@ -198,20 +198,24 @@ class DatasetPipeline:
         """Open a blocking Matplotlib artifact-review session."""
 
         from ..review.figure import open_review_figure
-        from ..review.session import ReviewSession
+        from ..review.session import ReviewSession, _NoMatchingReviewEpochsError
 
         subject = normalize_subject_index(subject_index)
         artifact_path = self.path_for_subject(subject, "artifacts")
         if not artifact_path.exists():
             raise FileNotFoundError(f"No artifact sidecar exists for {subject}: {artifact_path}.")
         epochs = self.load_epochs(subject, preload=True)
-        session = ReviewSession.from_path(
-            artifact_path,
-            subject_index=subject,
-            metadata=epochs.metadata,
-            group_by=group_by,
-            label=label,
-        )
+        try:
+            session = ReviewSession.from_path(
+                artifact_path,
+                subject_index=subject,
+                metadata=epochs.metadata,
+                group_by=group_by,
+                label=label,
+            )
+        except _NoMatchingReviewEpochsError:
+            print(f"No epochs are available for review in {group_by}={label!r}.")
+            return
         open_review_figure(
             session,
             epochs,
