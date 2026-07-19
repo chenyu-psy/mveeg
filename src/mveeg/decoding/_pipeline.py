@@ -188,6 +188,7 @@ class DecodingPipeline:
         evidence: Mapping[str, Sequence[object]] | None = None,
         generalization: Mapping[str, Sequence[object]] | None = None,
         output: str = "mean",
+        store_metadata: Sequence[str] | None = None,
         file: str | Path,
         recompute: str = "never",
         n_jobs: int = 1,
@@ -206,6 +207,7 @@ class DecodingPipeline:
             raise ValueError("n_jobs must be a positive integer.")
         if not isinstance(progress, bool):
             raise TypeError("progress must be bool.")
+        stored_metadata = _normalize_store_metadata(store_metadata)
         class_map, evidence_map = validate_groups(classes, evidence)
         generalization_map = validate_generalization(class_map, generalization)
         if (
@@ -250,6 +252,8 @@ class DecodingPipeline:
             "generalization": generalization_map,
             "output": output,
         }
+        if stored_metadata is not None:
+            config["store_metadata"] = stored_metadata
         analysis_fingerprint = fingerprint(config)
         if existing is not None and existing["fingerprint"] != analysis_fingerprint:
             if recompute != "all":
@@ -294,6 +298,7 @@ class DecodingPipeline:
                 classes=class_map,
                 evidence=evidence_map,
                 generalization=generalization_map,
+                store_metadata=stored_metadata,
             )
             decoded = decode_subject(
                 subject=subject,
@@ -367,6 +372,7 @@ def _prepare_subject(
     classes: dict[str, list[object]],
     evidence: dict[str, list[object]],
     generalization: dict[str, list[object]] | None,
+    store_metadata: list[str] | None,
 ) -> dict[str, object]:
     epochs, metadata = load_subject_epochs_and_metadata(
         pipeline.dataset,
@@ -383,6 +389,30 @@ def _prepare_subject(
         generalization=generalization,
         **pipeline._trial_selection,
     )
+    identity = ["subject_index", "epoch_index"]
+    if store_metadata is None:
+        metadata_columns = [column for column in selected.columns if column not in identity]
+    else:
+        missing = [column for column in store_metadata if column not in selected.columns]
+        if missing:
+            raise ValueError(
+                f"store_metadata columns are missing after transform_metadata: {missing}."
+            )
+        metadata_columns = list(store_metadata)
+    leading = [*identity, "class", "evidence_group"]
+    saved_columns = [*leading, *metadata_columns]
+    folded: dict[str, list[str]] = {}
+    for column in saved_columns:
+        folded.setdefault(column.casefold(), []).append(column)
+    collisions = [columns for columns in folded.values() if len(columns) > 1]
+    if collisions:
+        raise ValueError(
+            "Stored trial columns must be unique ignoring case for DuckDB; "
+            f"collisions={collisions}. Use store_metadata to select unambiguous columns."
+        )
+    trials = selected.loc[:, [*identity, *metadata_columns]].copy()
+    trials.insert(2, "class", class_labels)
+    trials.insert(3, "evidence_group", evidence_labels)
     preparation = pipeline._epoch_preparation
     drop = channels_to_drop(
         epochs,
@@ -401,18 +431,13 @@ def _prepare_subject(
     data = average_time_bins(epochs.get_data(copy=True)[rows], masks)
     channels = build_topography_coord_table(info=epochs.info, channels=list(epochs.ch_names))
 
-    trials = selected.copy()
-    trials.insert(2, "class", class_labels)
-    trials.insert(3, "evidence_group", evidence_labels)
-    leading = ["subject_index", "epoch_index", "class", "evidence_group"]
-    trials = trials[[*leading, *[column for column in trials.columns if column not in leading]]]
     return {
         "data": data,
         "class_labels": class_labels,
         "evidence_labels": evidence_labels,
         "generalization_labels": generalization_labels,
         "condition_values": selected[target].to_numpy(dtype=object),
-        "trials": trials,
+        "trials": trials[saved_columns],
         "channels": channels,
         "time_bins": time_bins,
     }
@@ -439,6 +464,28 @@ def _write_results(path: Path, results, fingerprints: dict[str, str]) -> None:
             )
         except Exception as error:
             mark_failed(path, subject, fingerprints[subject], str(error))
+
+
+def _normalize_store_metadata(store_metadata: Sequence[str] | None) -> list[str] | None:
+    """Validate optional metadata columns retained in the trials table."""
+
+    if store_metadata is None:
+        return None
+    if isinstance(store_metadata, (str, bytes)) or not isinstance(store_metadata, Sequence):
+        raise TypeError("store_metadata must be a sequence of column names or None.")
+    columns = list(store_metadata)
+    if any(not isinstance(column, str) or not column.strip() for column in columns):
+        raise ValueError("store_metadata column names must be non-empty strings.")
+    folded = [column.casefold() for column in columns]
+    if len(set(folded)) != len(folded):
+        raise ValueError("store_metadata column names must be unique ignoring case.")
+    always_stored = {"subject_index", "epoch_index", "class", "evidence_group"}
+    redundant = [column for column in columns if column.casefold() in always_stored]
+    if redundant:
+        raise ValueError(
+            f"store_metadata must not include columns that are always stored: {redundant}."
+        )
+    return columns
 
 
 def _name_pattern_channels(decoded: SubjectDecoding, channels: pd.DataFrame) -> None:

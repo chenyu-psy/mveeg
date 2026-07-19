@@ -29,7 +29,8 @@ transaction. Failures retain a reason and no partial result rows.
 
 `trials` always begins with `subject_index, epoch_index` followed by the
 analysis-specific role columns. Remaining experimental metadata is dynamic and
-preserves its post-transform order.
+preserves its post-transform order. Decoding may restrict these dynamic columns
+with `store_metadata`; the fixed identity and role columns remain unchanged.
 
 Scientific result tables have explicit, analysis-specific columns and order.
 Writers reject missing, extra, or reordered fixed columns. Support tables such

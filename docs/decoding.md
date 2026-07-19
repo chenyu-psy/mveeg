@@ -35,6 +35,7 @@ pipeline.decode(
         "high": ["SS4", "probe_high"],
     },
     output="mean",
+    store_metadata=["condition", "load"],
     file="results/decoding.duckdb",
     recompute="never",
     n_jobs=6,
@@ -68,6 +69,14 @@ values per subject; callers do not provide transform names or versions.
 `trials` begins with the canonical `subject_index + epoch_index`. A metadata
 column named `subject` is omitted only when it exactly repeats
 `subject_index`; otherwise it remains ordinary experiment metadata.
+`store_metadata=None` retains all selected post-transform metadata in this
+table. An empty sequence retains no extra metadata, while a sequence of column
+names retains only those columns in the requested order. The identity columns
+plus `class` and `evidence_group` are always stored. Requested columns must
+exist and the final DuckDB column names must be unique ignoring case; these
+checks run before model fitting. The option enters the analysis configuration
+only when it is explicitly set, so the default remains compatible with
+existing 0.3.1 configurations.
 
 `prepare_epochs()` expresses `crop` in seconds and `time_bin` in milliseconds.
 The result tables use milliseconds without a unit suffix. `time` is the bin

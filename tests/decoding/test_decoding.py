@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 import mveeg.decoding._analysis as decoding_analysis
+import mveeg.decoding._pipeline as decoding_pipeline
 from mveeg._dataset.store import DatasetBuilder
 from mveeg.decoding import DecodingPipeline, init_pipeline
 from mveeg.decoding._analysis import decode_subject
@@ -634,6 +635,91 @@ def test_pipeline_transform_metadata_builds_ordered_trial_variables(tmp_path):
     assert trials["condition_upper"].tolist() == [value.upper() for value in trials["condition"]]
     assert trials["is_a"].tolist() == trials["condition_upper"].eq("A").tolist()
     assert config["metadata_variables"] == ["condition_upper", "is_a"]
+    assert "store_metadata" not in config
+
+
+def test_pipeline_store_metadata_filters_trials_and_enters_config(tmp_path):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
+    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
+
+    expected = ["subject_index", "epoch_index", "class", "evidence_group"]
+    for name, store_metadata, columns in (
+        ("minimal", [], expected),
+        (
+            "selected",
+            ["final_status", "condition"],
+            [*expected, "final_status", "condition"],
+        ),
+    ):
+        result_file = tmp_path / f"{name}.duckdb"
+        pipeline.decode(
+            target="condition",
+            classes={"a": ["a"], "b": ["b"], "c": ["c"]},
+            store_metadata=store_metadata,
+            file=result_file,
+            progress=False,
+        )
+        with duckdb.connect(str(result_file), read_only=True) as connection:
+            observed = connection.execute("DESCRIBE trials").df()["column_name"].tolist()
+            config = json.loads(
+                connection.execute("SELECT config::VARCHAR FROM analysis").fetchone()[0]
+            )
+        assert observed == columns
+        assert config["store_metadata"] == store_metadata
+
+
+def test_pipeline_store_metadata_rejects_invalid_definitions(tmp_path):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    pipeline = init_pipeline(dataset)
+    arguments = {
+        "target": "condition",
+        "classes": {"a": ["a"], "b": ["b"], "c": ["c"]},
+        "file": tmp_path / "decoding.duckdb",
+        "progress": False,
+    }
+
+    with pytest.raises(TypeError, match="sequence of column names"):
+        pipeline.decode(**arguments, store_metadata="condition")
+    with pytest.raises(ValueError, match="unique ignoring case"):
+        pipeline.decode(**arguments, store_metadata=["condition", "CONDITION"])
+    with pytest.raises(ValueError, match="always stored"):
+        pipeline.decode(**arguments, store_metadata=["subject_index"])
+
+
+def test_pipeline_validates_stored_metadata_before_model_fitting(tmp_path, monkeypatch):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    pipeline = init_pipeline(dataset).transform_metadata(
+        CONDITION=lambda frame: frame["condition"].str.upper()
+    )
+    pipeline.prepare_epochs(crop=None, time_bin=50)
+    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
+
+    def fail_if_called(**kwargs):
+        raise AssertionError("decode_subject must not run before metadata validation")
+
+    monkeypatch.setattr(decoding_pipeline, "decode_subject", fail_if_called)
+    with pytest.raises(RuntimeError, match="No subject completed decoding"):
+        pipeline.decode(
+            target="condition",
+            classes={"a": ["a"], "b": ["b"], "c": ["c"]},
+            file=tmp_path / "collision.duckdb",
+            progress=False,
+        )
+    with duckdb.connect(str(tmp_path / "collision.duckdb"), read_only=True) as connection:
+        reason = connection.execute("SELECT reason FROM subjects").fetchone()[0]
+    assert "unique ignoring case" in reason
+    with pytest.raises(RuntimeError, match="No subject completed decoding"):
+        pipeline.decode(
+            target="condition",
+            classes={"a": ["a"], "b": ["b"], "c": ["c"]},
+            store_metadata=["missing"],
+            file=tmp_path / "missing.duckdb",
+            progress=False,
+        )
+    with duckdb.connect(str(tmp_path / "missing.duckdb"), read_only=True) as connection:
+        reason = connection.execute("SELECT reason FROM subjects").fetchone()[0]
+    assert "columns are missing" in reason
 
 
 def test_pipeline_metadata_variable_values_enter_subject_fingerprint(tmp_path):
