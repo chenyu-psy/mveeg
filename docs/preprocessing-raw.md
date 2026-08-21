@@ -46,7 +46,9 @@ Without `trial_sequences`, every matching `event_id` event starts one epoch.
 With sequences, the mapping value defines the required ordered event codes and
 the mapping key is time zero unless `time_zero` overrides it. Relative event
 times are added to metadata. `sync_eyelink()` reuses this registered epoch
-definition.
+definition without removing EEG epochs. Unmatched EyeLink trials produce NaN
+gaze channels and `gaze_available=False`; ambiguous trial-code alignment still
+raises an error.
 
 Behavior alignment is deliberately strict: preprocessing may filter the table,
 but `align_behavior()` then requires one row per current epoch in the existing

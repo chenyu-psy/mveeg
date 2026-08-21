@@ -173,7 +173,7 @@ def test_behavior_alignment_is_strict_count_and_order() -> None:
         align_behavior(epochs, behavior.iloc[:1])
 
 
-def test_eyelink_sync_removes_leading_warmup_trials() -> None:
+def test_eyelink_sync_keeps_eeg_trials_with_extra_leading_eyelink_trials() -> None:
     """Trial-code synchronization handles extra leading EyeLink warm-ups."""
     eeg_raw = mne.io.RawArray(
         np.zeros((1, 600)), mne.create_info(["Cz"], 100, "eeg"), verbose="ERROR"
@@ -208,6 +208,42 @@ def test_eyelink_sync_removes_leading_warmup_trials() -> None:
     assert len(synced) == 2
     assert synced.events[:, 2].tolist() == [1, 2]
     assert synced.ch_names == ["Cz", "xpos_left"]
+    assert synced.metadata["gaze_available"].tolist() == [True, True]
+
+
+def test_eyelink_sync_keeps_unmatched_eeg_trials_with_missing_gaze() -> None:
+    """Partial EyeLink streams add missing gaze values without dropping EEG."""
+    eeg_raw = mne.io.RawArray(
+        np.zeros((1, 800)), mne.create_info(["Cz"], 100, "eeg"), verbose="ERROR"
+    )
+    eeg = mne.Epochs(
+        eeg_raw,
+        np.asarray([[200, 0, 1], [400, 0, 2], [600, 0, 3]]),
+        event_id={"condition_a": 1, "condition_b": 2, "condition_c": 3},
+        tmin=-0.1,
+        tmax=0.2,
+        preload=True,
+        verbose="ERROR",
+    )
+    eye = mne.io.RawArray(
+        np.zeros((2, 800)),
+        mne.create_info(["xpos_left", "pupil_left"], 100, ["eyegaze", "pupil"]),
+        verbose="ERROR",
+    )
+    eye.set_annotations(mne.Annotations([4.0, 6.0], [0.0, 0.0], ["condition_b", "condition_c"]))
+
+    synced = sync_eyelink(
+        eeg,
+        eye,
+        event_id={"condition_a": 1, "condition_b": 2, "condition_c": 3},
+    )
+
+    assert len(synced) == 3
+    assert synced.events[:, 2].tolist() == [1, 2, 3]
+    assert synced.metadata["gaze_available"].tolist() == [False, True, True]
+    gaze = synced.get_data(picks=["xpos_left", "pupil_left"])
+    assert np.isnan(gaze[0]).all()
+    assert np.isfinite(gaze[1:]).all()
 
 
 def test_eyelink_internal_duplicate_alignment_is_rejected() -> None:
