@@ -486,12 +486,8 @@ def test_review_preserves_epoch_width_when_window_is_not_full():
         for line in browser.axes.lines
         if to_hex(line.get_color()) == "#000000" and line.get_linewidth() == 0.75
     ]
-    time_lock_lines = [
-        line for line in browser.axes.lines if to_hex(line.get_color()) == "#ff00ff"
-    ]
-    trial_labels = [
-        text for text in browser.axes.texts if text.get_text().startswith("Trial ")
-    ]
+    time_lock_lines = [line for line in browser.axes.lines if to_hex(line.get_color()) == "#ff00ff"]
+    trial_labels = [text for text in browser.axes.texts if text.get_text().startswith("Trial ")]
     statuses = [session.get_status(epoch) for epoch in range(3)]
 
     assert browser.axes.get_xlim() == pytest.approx((0, 5 * samples))
@@ -499,9 +495,7 @@ def test_review_preserves_epoch_width_when_window_is_not_full():
     assert len(time_lock_lines) == 3
     assert len(trial_labels) == 3
 
-    browser._on_click(
-        SimpleNamespace(inaxes=browser.axes, xdata=3.5 * samples, button=1)
-    )
+    browser._on_click(SimpleNamespace(inaxes=browser.axes, xdata=3.5 * samples, button=1))
     assert [session.get_status(epoch) for epoch in range(3)] == statuses
     plt.close(browser.figure)
 

@@ -82,9 +82,7 @@ class ReviewSession:
         self._group_values: pd.Series | None = None
         self._target_positions = self._select_target_positions(metadata)
         if len(self._target_positions) == 0:
-            raise _NoMatchingReviewEpochsError(
-                f"No epochs match {group_by!r} == {label!r}."
-            )
+            raise _NoMatchingReviewEpochsError(f"No epochs match {group_by!r} == {label!r}.")
 
         reviewed = self._artifacts.loc[self._target_positions, "reviewed"].to_numpy(dtype=bool)
         pending = np.flatnonzero(~reviewed)
