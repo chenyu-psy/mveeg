@@ -102,7 +102,9 @@ preprocessed.review_artifacts(
 The call is blocking and returns `None` when the figure closes. Trial clicks
 toggle accepted/rejected state, arrow keys navigate, `r` toggles reason codes,
 and `w` saves accumulated edits for visited trials. Closing without `w` writes
-nothing. Figure callbacks and preloaded data are released on close.
+nothing. If the selected category contains no epochs, the call prints a message
+and returns without opening a figure. Figure callbacks and preloaded data are
+released on close.
 
 Review state is transactional and separate from the Matplotlib presentation,
 so UI changes do not alter the artifact storage contract.

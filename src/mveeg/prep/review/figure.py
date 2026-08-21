@@ -225,7 +225,7 @@ class MatplotlibReviewBrowser:
                 clip_on=False,
             )
         self.axes.set_yticks(offsets, self.channel_names)
-        self.axes.set_xlim(0, len(self._displayed_epochs) * self._samples_per_epoch)
+        self.axes.set_xlim(0, self.session.window_size * self._samples_per_epoch)
         self.axes.set_ylim(-spacing, offsets[0] + spacing)
         if self._show_reasons:
             self._draw_reasons(rows, centers, offsets)

@@ -111,9 +111,10 @@ def test_preprocess_label_relabel_and_dataset_review_method(tmp_path, monkeypatc
     assert bool(relabeled.loc[0, "reviewed"])
     assert relabeled.loc[1:, "final_status"].tolist() == ["review"] * 3
 
-    captured = {}
+    captured = {"opens": 0}
 
     def fake_open(session, epochs, **kwargs):
+        captured["opens"] += 1
         captured["session"] = session
         captured["epochs"] = epochs
         captured["kwargs"] = kwargs
@@ -130,8 +131,24 @@ def test_preprocess_label_relabel_and_dataset_review_method(tmp_path, monkeypatc
     )
 
     assert result is None
+    assert captured["opens"] == 1
     assert captured["session"].target_epoch_indices == (1, 2, 3)
     assert captured["kwargs"]["hide_channels"] == ["Pz"]
+
+    before = artifact_path.read_bytes()
+    capsys.readouterr()
+    result = preprocessed.review_artifacts(
+        subject_index="4001",
+        group_by="final_status",
+        label="accepted",
+    )
+
+    assert result is None
+    assert capsys.readouterr().out == (
+        "No epochs are available for review in final_status='accepted'.\n"
+    )
+    assert captured["opens"] == 1
+    assert artifact_path.read_bytes() == before
 
 
 def test_artifact_recompute_changed_reuses_complete_sidecars(tmp_path, monkeypatch):
