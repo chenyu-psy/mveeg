@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import warnings
 from pathlib import Path
 
 import mne
@@ -51,35 +50,7 @@ def eyelink_files(subject_dir: Path) -> list[Path]:
     )
 
 
-def read_eyelink(path: Path) -> mne.io.BaseRaw:
-    """Prefer MNE's public reader and fall back for the known signed-sample bug."""
-
-    try:
-        return mne.io.read_raw_eyelink(path, verbose="ERROR")
-    except (RuntimeError, ValueError) as mne_error:
-        try:
-            raw = read_eyelink_asc_fallback(path)
-        except (OSError, ValueError) as fallback_error:
-            raise ValueError(
-                f"Could not read {path.name} as EyeLink ASCII. "
-                f"MNE reader failed: {mne_error}; fallback failed: {fallback_error}"
-            ) from fallback_error
-        message = str(mne_error)
-        known_status_error = (
-            "Expected the samples data in this file to have 7 columns of data, but got 6."
-            in message
-            and "xpos_left" in message
-            and "pupil_right" in message
-        )
-        if not known_status_error:
-            warnings.warn(
-                f"MNE could not read {path.name}; using mveeg's strict ASC fallback ({mne_error}).",
-                stacklevel=2,
-            )
-        return raw
-
-
-def read_eyelink_asc_fallback(path: Path) -> mne.io.RawArray:
+def read_eyelink(path: Path) -> mne.io.RawArray:
     """Read binocular samples and message markers from EyeLink ASCII."""
 
     sfreq: float | None = None
