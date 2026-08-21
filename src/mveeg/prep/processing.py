@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import tempfile
+import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from .._dataset.manifest import MANIFEST_COLUMNS, read_json
-from .._dataset.store import DatasetBuilder, write_json_atomic, write_table_atomic
+from .._dataset.manifest import MANIFEST_COLUMNS, read_json, relative_paths
+from .._dataset.store import (
+    RECOMPUTE_VALUES,
+    DatasetBuilder,
+    write_json_atomic,
+    write_table_atomic,
+)
 from .._provenance import fingerprint, fingerprint_files
 from .artifacts import (
     _join_reasons,
@@ -90,6 +96,24 @@ def _preprocess_epochs(
                 builder.record_reused(subject_index)
                 continue
 
+            artifact_path = (
+                builder.root
+                / relative_paths(str(subject_index), source.task, "preprocessed")["artifacts_path"]
+            )
+            if artifact_path.exists() and read_artifact_table(artifact_path)["reviewed"].any():
+                if recompute == "changed":
+                    raise RuntimeError(
+                        f"Preprocessing subject {subject_index} would discard reviewed artifact "
+                        "decisions. Back up the artifact sidecar and use recompute='all' to "
+                        "confirm replacement."
+                    )
+                if recompute == "all":
+                    warnings.warn(
+                        f"Preprocessing subject {subject_index} with recompute='all' discards "
+                        "reviewed artifact decisions.",
+                        stacklevel=2,
+                    )
+
             epochs = source.load_epochs(subject_index, preload=True)
             eligibility_result = check_eligibility(
                 epochs,
@@ -130,6 +154,7 @@ def label_artifacts(
     reject: Mapping[str, object],
     review: Mapping[str, object],
     ignore_channels: Sequence[str] = (),
+    recompute: str = "all",
 ) -> DatasetPipeline:
     """Create or refresh artifact sidecars and print automatic status counts.
 
@@ -141,6 +166,9 @@ def label_artifacts(
         Automatic rejection and review rule configurations.
     ignore_channels : sequence of str
         Channels retained in sidecars but excluded from trial aggregation.
+    recompute : {"never", "changed", "all"}
+        Reuse existing sidecars, refresh them only when labeling rules changed,
+        or always refresh them. Missing sidecars are generated.
 
     Returns
     -------
@@ -154,6 +182,8 @@ def label_artifacts(
     ``final_status``.
     """
 
+    if recompute not in RECOMPUTE_VALUES:
+        raise ValueError(f"recompute must be one of {sorted(RECOMPUTE_VALUES)}.")
     dataset = open_pipeline(pipeline) if not isinstance(pipeline, DatasetPipeline) else pipeline
     if dataset.stage != "preprocessed":
         raise ValueError(
@@ -161,17 +191,48 @@ def label_artifacts(
         )
     if "gaze" in reject:
         raise ValueError("reject.gaze is unsupported; hard gaze rules belong in eligibility.gaze.")
+    provenance = read_json(dataset.root / "provenance.json")
     gaze_geometry = _gaze_geometry_from_provenance(
-        read_json(dataset.root / "provenance.json"),
+        provenance,
         required=(
             "gaze" in review and _gaze_rule_requires_geometry(review["gaze"], context="review.gaze")
         ),
         context="review.gaze",
         pipeline_spec=True,
     )
+    labeling = {
+        "reject": dict(reject),
+        "review": dict(review),
+        "ignore_channels": list(ignore_channels),
+        "gaze_geometry": gaze_geometry,
+    }
+    labeling_fingerprint = fingerprint(labeling)
+    previous_fingerprint = provenance.get("artifact_labeling", {}).get("fingerprint")
+    labeling_changed = previous_fingerprint != labeling_fingerprint
     manifest = dataset.manifest
+    artifact_paths = {
+        subject: dataset.path_for_subject(subject, "artifacts")
+        for subject in dataset.subject_indices
+    }
+    existing_count = sum(path.exists() for path in artifact_paths.values())
+    if recompute == "never" and labeling_changed and 0 < existing_count < len(artifact_paths):
+        raise RuntimeError(
+            "recompute='never' cannot generate missing artifact sidecars with labeling rules "
+            "that differ from existing sidecars."
+        )
+    if recompute == "never" and labeling_changed and existing_count:
+        warnings.warn(
+            "Artifact labeling configuration changed, but recompute='never' preserves existing "
+            "sidecars.",
+            stacklevel=2,
+        )
     status_counts = []
     for subject_index in dataset.subject_indices:
+        artifact_path = artifact_paths[subject_index]
+        if artifact_path.exists() and (
+            recompute == "never" or (recompute == "changed" and not labeling_changed)
+        ):
+            continue
         epochs = dataset.load_epochs(subject_index, preload=True)
         quality_path = quality_state_path(dataset.root, subject_index, dataset.task)
         if not quality_path.exists():
@@ -193,7 +254,6 @@ def label_artifacts(
             )
         except ValueError as error:
             raise ValueError(f"Subject {subject_index}: {error}") from error
-        artifact_path = dataset.path_for_subject(subject_index, "artifacts")
         previous = read_artifact_table(artifact_path) if artifact_path.exists() else None
         channel_reasons = _append_autoreject_channel_reasons(
             epochs,
@@ -227,23 +287,16 @@ def label_artifacts(
             manifest["subject_index"].astype(str).eq(str(subject_index)),
             "artifacts_path",
         ] = relative
+    if not status_counts:
+        return dataset.refresh()
+
     write_table_atomic(manifest[MANIFEST_COLUMNS], dataset.root / "manifest.tsv")
     _extend_provenance(
         dataset.root,
         {
             "artifact_labeling": {
-                "fingerprint": fingerprint(
-                    {
-                        "reject": dict(reject),
-                        "review": dict(review),
-                        "ignore_channels": list(ignore_channels),
-                        "gaze_geometry": gaze_geometry,
-                    }
-                ),
-                "reject": dict(reject),
-                "review": dict(review),
-                "ignore_channels": list(ignore_channels),
-                "gaze_geometry": gaze_geometry,
+                "fingerprint": labeling_fingerprint,
+                **labeling,
             }
         },
     )

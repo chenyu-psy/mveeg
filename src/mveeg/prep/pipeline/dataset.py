@@ -173,6 +173,7 @@ class DatasetPipeline:
         reject: Mapping[str, object],
         review: Mapping[str, object],
         ignore_channels: Sequence[str] = (),
+        recompute: str = "all",
     ) -> DatasetPipeline:
         """Create or refresh artifact sidecars."""
 
@@ -183,6 +184,7 @@ class DatasetPipeline:
             reject=reject,
             review=review,
             ignore_channels=ignore_channels,
+            recompute=recompute,
         )
 
     def review_artifacts(
