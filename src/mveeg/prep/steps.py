@@ -184,10 +184,12 @@ def sync_eyelink(
     baseline: tuple[float | None, float | None] | None = None,
     sampling_rate: float | None = None,
 ) -> mne.Epochs:
-    """Epoch EyeLink data, align trial codes, and append its channels.
+    """Append aligned EyeLink channels without changing the EEG trial set.
 
     Alignment uses chronological trial codes. Exact prefix and suffix matches
-    are preferred so extra warm-up trials are handled deterministically.
+    are preferred so extra warm-up trials are handled deterministically. EEG
+    epochs without a matching EyeLink epoch retain their signal and metadata;
+    their EyeLink channels are NaN and ``gaze_available`` is ``False``.
     """
     resolved_window = (
         (float(epochs.tmin), float(epochs.tmax)) if time_window is None else time_window
@@ -206,7 +208,6 @@ def sync_eyelink(
         reject_by_annotation=False,
     )
     eeg_ix, eye_ix = _ordered_code_alignment(epochs.events[:, 2], eye_epochs.events[:, 2])
-    eeg_epochs = epochs[eeg_ix]
     eye_epochs = eye_epochs[eye_ix]
 
     if baseline is not None:
@@ -223,13 +224,32 @@ def sync_eyelink(
             )
     if "DIN" in eye_epochs.ch_names:
         eye_epochs.drop_channels(["DIN"])
-    if len(eeg_epochs.times) != len(eye_epochs.times) or not np.allclose(
-        eeg_epochs.times, eye_epochs.times
+    if len(epochs.times) != len(eye_epochs.times) or not np.allclose(
+        epochs.times, eye_epochs.times
     ):
         raise RuntimeError("EEG and EyeLink epochs have different sample times after resampling.")
-    output = eeg_epochs.copy()
-    output.add_channels([eye_epochs], force_update_info=True)
-    return output
+
+    eye_data = np.full(
+        (len(epochs), len(eye_epochs.ch_names), len(epochs.times)),
+        np.nan,
+        dtype=float,
+    )
+    eye_data[eeg_ix] = eye_epochs.get_data(copy=False)
+    aligned_eye = mne.EpochsArray(
+        eye_data,
+        eye_epochs.info.copy(),
+        events=epochs.events.copy(),
+        event_id=epochs.event_id,
+        tmin=float(epochs.tmin),
+        baseline=None,
+        verbose="ERROR",
+    )
+    output = epochs.copy()
+    output.add_channels([aligned_eye], force_update_info=True)
+    metadata = _metadata(output)
+    metadata["gaze_available"] = False
+    metadata.loc[eeg_ix, "gaze_available"] = True
+    return _with_metadata(output, metadata)
 
 
 def align_behavior(epochs: mne.Epochs, behavior: pd.DataFrame) -> mne.Epochs:

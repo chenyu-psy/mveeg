@@ -15,3 +15,5 @@ columns appear in a different order across subjects.
   under DuckDB's case-insensitive identifier rules.
 - Stop Decoding and Encoding on the first unhandled subject failure after
   recording its reason, matching preprocessing's existing fail-fast behavior.
+- Preserve EEG trials when EyeLink data are incomplete, marking unmatched gaze
+  channels as missing instead of silently dropping epochs.

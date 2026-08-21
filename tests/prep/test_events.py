@@ -198,7 +198,7 @@ def test_raw_pipeline_resolves_time_zero_and_sync_inherits_epoch_config(
 
     make_operation, sync_operation = pipeline._operations
     assert make_operation.params["time_zero"] == {10: 2, 20: 2}
-    assert sync_operation.params == {}
+    assert sync_operation.params == {"preserve_eeg_epochs": True}
 
     raw = _raw()
     monkeypatch.setattr(pipeline, "_load_eeg", lambda subject_dir: raw.copy())
