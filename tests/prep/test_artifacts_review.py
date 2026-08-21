@@ -459,6 +459,47 @@ def test_review_uses_02_epoch_guides_and_top_trial_labels():
     plt.close(browser.figure)
 
 
+def test_review_preserves_epoch_width_when_window_is_not_full():
+    """A short window keeps five epoch slots and ignores clicks in empty slots."""
+    from types import SimpleNamespace
+
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import to_hex
+
+    from mveeg.prep.review import open_review_figure
+
+    plt.switch_backend("Agg")
+    epochs = _make_review_epochs(3)
+    artifacts = build_artifact_table(
+        "4001",
+        range(3),
+        ["Cz", "Pz"],
+        epoch_rejected=np.zeros(3, dtype=bool),
+        epoch_review=np.zeros(3, dtype=bool),
+    )
+    session = ReviewSession(artifacts, subject_index="4001", window_size=5)
+    browser = open_review_figure(session, epochs, show=False)
+
+    samples = browser._samples_per_epoch
+    traces = [
+        line
+        for line in browser.axes.lines
+        if to_hex(line.get_color()) == "#000000" and line.get_linewidth() == 0.75
+    ]
+    time_lock_lines = [line for line in browser.axes.lines if to_hex(line.get_color()) == "#ff00ff"]
+    trial_labels = [text for text in browser.axes.texts if text.get_text().startswith("Trial ")]
+    statuses = [session.get_status(epoch) for epoch in range(3)]
+
+    assert browser.axes.get_xlim() == pytest.approx((0, 5 * samples))
+    assert all(len(line.get_xdata()) == 3 * samples for line in traces)
+    assert len(time_lock_lines) == 3
+    assert len(trial_labels) == 3
+
+    browser._on_click(SimpleNamespace(inaxes=browser.axes, xdata=3.5 * samples, button=1))
+    assert [session.get_status(epoch) for epoch in range(3)] == statuses
+    plt.close(browser.figure)
+
+
 def test_review_distinguishes_bad_and_interpolated_autoreject_channels():
     """Interpolated channels use a distinct blue dashed overlay."""
 

@@ -235,15 +235,17 @@ class EncodingPipeline:
                     stacklevel=2,
                 )
 
-        def work(subject: str):
-            prepared = _prepare_subject(
+        def prepare(subject: str):
+            return _prepare_subject(
                 self,
                 subject=subject,
                 target=target,
                 conditions=condition_map,
                 expression=expression_map,
             )
-            encoded = encode_subject(
+
+        def fit(subject: str, prepared):
+            return encode_subject(
                 subject=subject,
                 data=prepared["data"],
                 metadata=prepared["metadata"],
@@ -259,17 +261,15 @@ class EncodingPipeline:
                 n_jobs=n_jobs,
                 progress=progress,
             )
-            return prepared, encoded
 
         for subject in subjects:
             mark_pending(path, subject, fingerprints[subject])
+            phase = "preparation"
             try:
-                prepared_encoded = work(subject)
-            except Exception as error:
-                mark_failed(path, subject, fingerprints[subject], str(error))
-                continue
-            prepared, encoded = prepared_encoded
-            try:
+                prepared = prepare(subject)
+                phase = "model fitting"
+                encoded = fit(subject, prepared)
+                phase = "result persistence"
                 _name_coefficient_channels(encoded, prepared["channels"])
                 write_subject(
                     path,
@@ -283,6 +283,9 @@ class EncodingPipeline:
                 )
             except Exception as error:
                 mark_failed(path, subject, fingerprints[subject], str(error))
+                raise RuntimeError(
+                    f"Encoding {phase} failed for subject {subject}: {error}"
+                ) from error
 
         if completed_subjects(path) == 0:
             raise RuntimeError(
