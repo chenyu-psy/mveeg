@@ -21,9 +21,6 @@ from mveeg.prep.eyelink import (
 from mveeg.prep.eyelink import (
     read_eyelink as _read_eyelink,
 )
-from mveeg.prep.eyelink import (
-    read_eyelink_asc_fallback as _read_eyelink_fallback,
-)
 from mveeg.prep.pipeline.raw import (
     _source_dependencies,
     init_pipeline,
@@ -252,8 +249,8 @@ def test_eyelink_internal_duplicate_alignment_is_rejected() -> None:
         _ordered_code_alignment([1, 2, 3], [1, 2, 2, 3])
 
 
-def test_eyelink_fallback_preserves_missing_sample_clock(tmp_path) -> None:
-    """Fallback parsing keeps explicit and absent sample rows as NaN time points."""
+def test_eyelink_reader_preserves_missing_sample_clock(tmp_path) -> None:
+    """Native parsing keeps explicit and absent sample rows as NaN time points."""
     asc = tmp_path / "eye.asc"
     asc.write_text(
         "SAMPLES GAZE LEFT RIGHT RATE 1000\n"
@@ -264,7 +261,7 @@ def test_eyelink_fallback_preserves_missing_sample_clock(tmp_path) -> None:
         "MSG 1003 condition_a\n"
         "MSG 2000 out_of_range_after_recording\n"
     )
-    raw = _read_eyelink_fallback(asc)
+    raw = _read_eyelink(asc)
     assert raw.n_times == 4
     assert np.isnan(raw.get_data()[:, 1:3]).all()
     assert raw.annotations.onset.tolist() == pytest.approx([0.003])
@@ -274,46 +271,25 @@ def test_eyelink_fallback_preserves_missing_sample_clock(tmp_path) -> None:
 
 
 @pytest.mark.filterwarnings("error")
-def test_known_mne_eyelink_status_error_is_silent(tmp_path, monkeypatch) -> None:
-    """A validated fallback hides MNE's known signed-value/status parsing bug."""
+def test_eyelink_reader_bypasses_mne_and_preserves_signed_values(tmp_path, monkeypatch) -> None:
+    """The native reader avoids MNE's signed-value/status parsing bug."""
     asc = tmp_path / "eye.asc"
     asc.write_text("SAMPLES GAZE LEFT RIGHT RATE 1000\n1000 1 2 3 4 -94.4 6 .....\n")
 
-    def fail_mne(*args, **kwargs):
-        raise ValueError(
-            "Expected the samples data in this file to have 7 columns of data, but got 6. "
-            "Expected columns: ['time', 'xpos_left', 'ypos_left', 'pupil_left', "
-            "'xpos_right', 'ypos_right', 'pupil_right']."
-        )
+    def fail_mne(*args, **kwargs):  # pragma: no cover - called only on regression
+        pytest.fail("mveeg's native EyeLink reader must not call MNE")
 
     monkeypatch.setattr(mne.io, "read_raw_eyelink", fail_mne)
     raw = _read_eyelink(asc)
     assert raw.get_data()[4, 0] == pytest.approx(-94.4)
 
 
-def test_unexpected_mne_eyelink_error_still_warns(tmp_path, monkeypatch) -> None:
-    """Unexpected MNE failures remain visible even when the fallback succeeds."""
-    asc = tmp_path / "eye.asc"
-    asc.write_text("SAMPLES GAZE LEFT RIGHT RATE 1000\n1000 1 2 3 4 5 6 .....\n")
-
-    def fail_mne(*args, **kwargs):
-        raise ValueError("unexpected parser failure")
-
-    monkeypatch.setattr(mne.io, "read_raw_eyelink", fail_mne)
-    with pytest.warns(UserWarning, match="MNE could not read"):
-        _read_eyelink(asc)
-
-
-def test_eyelink_reports_both_reader_failures(tmp_path, monkeypatch) -> None:
-    """A wholly unreadable file reports both attempted readers."""
+def test_eyelink_reader_rejects_unreadable_file(tmp_path) -> None:
+    """A wholly unreadable file reports the missing native ASC content."""
     asc = tmp_path / "eye.asc"
     asc.write_text("not EyeLink data\n")
 
-    def fail_mne(*args, **kwargs):
-        raise ValueError("unexpected parser failure")
-
-    monkeypatch.setattr(mne.io, "read_raw_eyelink", fail_mne)
-    with pytest.raises(ValueError, match="MNE reader failed:.*fallback failed:"):
+    with pytest.raises(ValueError, match="Could not find sampling rate and binocular samples"):
         _read_eyelink(asc)
 
 
