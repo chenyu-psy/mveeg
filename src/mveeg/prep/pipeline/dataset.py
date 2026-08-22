@@ -173,6 +173,7 @@ class DatasetPipeline:
         reject: Mapping[str, object],
         review: Mapping[str, object],
         ignore_channels: Sequence[str] = (),
+        recompute: str = "all",
     ) -> DatasetPipeline:
         """Create or refresh artifact sidecars."""
 
@@ -183,7 +184,31 @@ class DatasetPipeline:
             reject=reject,
             review=review,
             ignore_channels=ignore_channels,
+            recompute=recompute,
         )
+
+    def artifact_counts(self, *, status: str = "final_status") -> pd.DataFrame:
+        """Return per-subject counts for automatic or final artifact status."""
+
+        from ..artifacts import read_artifact_table
+
+        if status not in {"initial_status", "final_status"}:
+            raise ValueError("status must be 'initial_status' or 'final_status'.")
+        rows = []
+        for subject in self.subject_indices:
+            path = self.path_for_subject(subject, "artifacts")
+            if not path.exists():
+                raise FileNotFoundError(f"No artifact sidecar exists for {subject}: {path}.")
+            counts = read_artifact_table(path)[status].value_counts()
+            rows.append(
+                {
+                    "subject": subject,
+                    "accepted": int(counts.get("accepted", 0)),
+                    "rejected": int(counts.get("rejected", 0)),
+                    "review": int(counts.get("review", 0)),
+                }
+            )
+        return pd.DataFrame(rows, columns=["subject", "accepted", "rejected", "review"])
 
     def review_artifacts(
         self,
@@ -198,20 +223,24 @@ class DatasetPipeline:
         """Open a blocking Matplotlib artifact-review session."""
 
         from ..review.figure import open_review_figure
-        from ..review.session import ReviewSession
+        from ..review.session import ReviewSession, _NoMatchingReviewEpochsError
 
         subject = normalize_subject_index(subject_index)
         artifact_path = self.path_for_subject(subject, "artifacts")
         if not artifact_path.exists():
             raise FileNotFoundError(f"No artifact sidecar exists for {subject}: {artifact_path}.")
         epochs = self.load_epochs(subject, preload=True)
-        session = ReviewSession.from_path(
-            artifact_path,
-            subject_index=subject,
-            metadata=epochs.metadata,
-            group_by=group_by,
-            label=label,
-        )
+        try:
+            session = ReviewSession.from_path(
+                artifact_path,
+                subject_index=subject,
+                metadata=epochs.metadata,
+                group_by=group_by,
+                label=label,
+            )
+        except _NoMatchingReviewEpochsError:
+            print(f"No epochs are available for review in {group_by}={label!r}.")
+            return
         open_review_figure(
             session,
             epochs,

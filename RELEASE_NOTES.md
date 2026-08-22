@@ -1,20 +1,24 @@
-# mveeg 0.3.0
+# mveeg 0.3.1
 
-mveeg 0.3.0 is the first public release of a Python package for preparing EEG
-datasets and running multivariate decoding and encoding analyses. It provides
-manifest-backed workflows that keep trial metadata, processing history, and
-analysis results together from preparation through publication.
+mveeg 0.3.1 improves result reliability, artifact review, and EyeLink
+synchronization while keeping the 0.3 analysis workflows unchanged.
 
-## Highlights
+## What changed
 
-- Build prepared datasets from continuous recordings or existing MNE Epochs,
-  with explicit metadata transforms, trial identity, and provenance.
-- Apply eligibility checks, AutoReject, artifact rules, saved quality state,
-  and interactive manual review.
-- Run binary or multiclass decoding with cross-validation, trial averaging,
-  classifier evidence, Haufe patterns, permutations, and temporal
-  generalization with accuracy and target-directed evidence.
-- Fit formula-based encoding models with coefficients, pattern expression, and
-  model diagnostics.
-- Resume subject-level analyses and write results transactionally to portable
-  DuckDB files with explicit schemas and package versions.
+- Result files now match trial metadata by column name, so subjects remain
+  aligned even when their metadata columns arrive in a different order.
+- `decode(store_metadata=...)` can save all, none, or selected trial metadata;
+  invalid or conflicting column names are reported before model fitting starts.
+- Decoding and Encoding stop at the first failed subject, save the reason, and
+  leave completed subjects ready to reuse on the next run.
+- Artifact labeling reuses unchanged label files without repeating expensive
+  calculations. Manual decisions are preserved, and reviewed labels are
+  protected before preprocessing replaces a subject.
+- `artifact_counts()` returns automatic or final label counts as a DataFrame
+  for direct display in notebooks.
+- Artifact review handles short display windows and empty review groups without
+  opening a broken figure.
+- EyeLink synchronization keeps every EEG trial when gaze data are incomplete;
+  unmatched gaze samples are marked missing instead of dropping EEG epochs.
+- EyeLink ASC files use mveeg's reader directly for consistent handling of
+  signed sample values and message markers.

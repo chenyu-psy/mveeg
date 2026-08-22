@@ -37,16 +37,20 @@ prepared = pipeline.build_epochs(
 `mne.io.read_raw()` dispatcher. It has no custom reader hook. Project-specific
 formats should be read by project code and passed through the external pipeline.
 
-`load_eyelink()` discovers ASC and EDF files. MNE's public EyeLink reader is
-tried first. For the known signed-sample parser failure, mveeg uses a strict ASC
-fallback. Other MNE-reader failures issue a warning before fallback. EDF files
-without an ASC counterpart require the SR Research `edf2asc` executable.
+`load_eyelink()` discovers ASC and EDF files. mveeg reads binocular samples and
+message markers directly because MNE's current EyeLink reader misclassifies some
+signed samples as status columns. EDF files without an ASC counterpart require
+the SR Research `edf2asc` executable. The stable mveeg reader entry point keeps
+the backend internal so a validated future MNE release can replace it without
+changing preprocessing pipelines.
 
 Without `trial_sequences`, every matching `event_id` event starts one epoch.
 With sequences, the mapping value defines the required ordered event codes and
 the mapping key is time zero unless `time_zero` overrides it. Relative event
 times are added to metadata. `sync_eyelink()` reuses this registered epoch
-definition.
+definition without removing EEG epochs. Unmatched EyeLink trials produce NaN
+gaze channels and `gaze_available=False`; ambiguous trial-code alignment still
+raises an error.
 
 Behavior alignment is deliberately strict: preprocessing may filter the table,
 but `align_behavior()` then requires one row per current epoch in the existing

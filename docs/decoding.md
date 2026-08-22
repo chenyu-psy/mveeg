@@ -35,6 +35,7 @@ pipeline.decode(
         "high": ["SS4", "probe_high"],
     },
     output="mean",
+    store_metadata=["condition", "load"],
     file="results/decoding.duckdb",
     recompute="never",
     n_jobs=6,
@@ -68,6 +69,14 @@ values per subject; callers do not provide transform names or versions.
 `trials` begins with the canonical `subject_index + epoch_index`. A metadata
 column named `subject` is omitted only when it exactly repeats
 `subject_index`; otherwise it remains ordinary experiment metadata.
+`store_metadata=None` retains all selected post-transform metadata in this
+table. An empty sequence retains no extra metadata, while a sequence of column
+names retains only those columns in the requested order. The identity columns
+plus `class` and `evidence_group` are always stored. Requested columns must
+exist and the final DuckDB column names must be unique ignoring case; these
+checks run before model fitting. The option enters the analysis configuration
+only when it is explicitly set, so the default remains compatible with
+existing 0.3.1 configurations.
 
 `prepare_epochs()` expresses `crop` in seconds and `time_bin` in milliseconds.
 The result tables use milliseconds without a unit suffix. `time` is the bin
@@ -208,6 +217,10 @@ Each subject's result rows are committed together. `subjects.status` is
 `pending`, `complete`, or `failed`; failures keep their reason. There is no
 fold-level checkpoint. Subjects that do not need recomputation are reused
 without loading their epochs or displaying a progress bar.
+An unhandled subject preparation, fitting, or persistence error is recorded as
+`failed` and then raised immediately with the subject identifier. Later
+subjects are not attempted; a later call reuses completed subjects and retries
+the failed and not-yet-attempted subjects.
 
 Decoding result schema 2 adds `generalization.target_evidence`. Schema-1 files
 are rejected by default; `recompute="all"` may replace a known schema-1 file

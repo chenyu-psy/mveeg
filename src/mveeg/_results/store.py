@@ -165,7 +165,7 @@ def insert_frame(
     table_name: str,
     frame: pd.DataFrame,
 ) -> None:
-    """Create or append a frame while preserving exact column order."""
+    """Create or append a frame by matching existing columns by name."""
 
     if len(frame) == 0:
         return
@@ -177,7 +177,7 @@ def insert_frame(
         columns = [
             row[1] for row in connection.execute(f"PRAGMA table_info('{table_name}')").fetchall()
         ]
-        if columns != list(frame.columns):
+        if len(columns) != len(frame.columns) or set(columns) != set(frame.columns):
             raise ValueError(
                 f"{table_name} columns changed between subjects: "
                 f"saved={columns}, new={list(frame.columns)}."

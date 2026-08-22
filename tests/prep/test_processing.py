@@ -88,15 +88,10 @@ def test_preprocess_label_relabel_and_dataset_review_method(tmp_path, monkeypatc
     assert autoreject["labels"].shape == (4, 2)
 
     preprocessed.label_artifacts(reject={}, review=_review_config())
-    assert capsys.readouterr().out.split() == [
-        "subject",
-        "accepted",
-        "rejected",
-        "review",
-        "4001",
-        "4",
-        "0",
-        "0",
+    assert capsys.readouterr().out == ""
+    initial = preprocessed.artifact_counts(status="initial_status")
+    assert initial.to_dict("records") == [
+        {"subject": "4001", "accepted": 4, "rejected": 0, "review": 0}
     ]
     artifact_path = preprocessed.path_for_subject("4001", "artifacts")
     first = read_artifact_table(artifact_path)
@@ -104,16 +99,22 @@ def test_preprocess_label_relabel_and_dataset_review_method(tmp_path, monkeypatc
 
     first.loc[0, ["final_status", "reviewed"]] = ["rejected", True]
     write_artifact_table(first, artifact_path)
-    preprocessed.label_artifacts(reject={}, review=_review_config(threshold=0))
+    preprocessed.label_artifacts(reject={}, review=_review_config(threshold=0), recompute="all")
     relabeled = read_artifact_table(artifact_path)
     assert relabeled.loc[0, "initial_status"] == "review"
     assert relabeled.loc[0, "final_status"] == "rejected"
     assert bool(relabeled.loc[0, "reviewed"])
     assert relabeled.loc[1:, "final_status"].tolist() == ["review"] * 3
+    final = preprocessed.artifact_counts()
+    assert final.columns.tolist() == ["subject", "accepted", "rejected", "review"]
+    assert final.to_dict("records") == [
+        {"subject": "4001", "accepted": 0, "rejected": 1, "review": 3}
+    ]
 
-    captured = {}
+    captured = {"opens": 0}
 
     def fake_open(session, epochs, **kwargs):
+        captured["opens"] += 1
         captured["session"] = session
         captured["epochs"] = epochs
         captured["kwargs"] = kwargs
@@ -130,11 +131,50 @@ def test_preprocess_label_relabel_and_dataset_review_method(tmp_path, monkeypatc
     )
 
     assert result is None
+    assert captured["opens"] == 1
     assert captured["session"].target_epoch_indices == (1, 2, 3)
     assert captured["kwargs"]["hide_channels"] == ["Pz"]
 
+    before = artifact_path.read_bytes()
+    capsys.readouterr()
+    result = preprocessed.review_artifacts(
+        subject_index="4001",
+        group_by="final_status",
+        label="accepted",
+    )
 
-def test_changed_preprocessing_replaces_dense_state_and_removes_stale_artifacts(tmp_path):
+    assert result is None
+    assert capsys.readouterr().out == (
+        "No epochs are available for review in final_status='accepted'.\n"
+    )
+    assert captured["opens"] == 1
+    assert artifact_path.read_bytes() == before
+
+
+def test_artifact_recompute_changed_reuses_complete_sidecars(tmp_path, monkeypatch):
+    prepared = _prepared_dataset(tmp_path)
+    preprocessed = _preprocess_epochs(
+        prepared,
+        tmp_path / "preprocessed",
+        eligibility=_eligibility_config(),
+        autoreject=None,
+    )
+    preprocessed.label_artifacts(reject={}, review=_review_config(), recompute="changed")
+    artifact_path = preprocessed.path_for_subject("4001", "artifacts")
+    before = artifact_path.read_bytes()
+    before_mtime = artifact_path.stat().st_mtime_ns
+
+    def fail_load(*args, **kwargs):
+        raise AssertionError("unchanged artifact labels must not load epochs")
+
+    monkeypatch.setattr(preprocessed, "load_epochs", fail_load)
+    preprocessed.label_artifacts(reject={}, review=_review_config(), recompute="changed")
+
+    assert artifact_path.read_bytes() == before
+    assert artifact_path.stat().st_mtime_ns == before_mtime
+
+
+def test_changed_preprocessing_protects_reviewed_artifacts(tmp_path):
     prepared = _prepared_dataset(tmp_path)
     output = tmp_path / "preprocessed"
     first = _preprocess_epochs(
@@ -145,16 +185,28 @@ def test_changed_preprocessing_replaces_dense_state_and_removes_stale_artifacts(
     )
     first.label_artifacts(reject={}, review=_review_config())
     artifact_path = first.path_for_subject("4001", "artifacts")
+    table = read_artifact_table(artifact_path)
+    table.loc[0, ["final_status", "reviewed"]] = ["rejected", True]
+    write_artifact_table(table, artifact_path)
+
+    with pytest.raises(RuntimeError, match="would discard reviewed artifact decisions"):
+        _preprocess_epochs(
+            prepared,
+            output,
+            eligibility=_eligibility_config(absolute_value=5e-4),
+            autoreject=None,
+            recompute="changed",
+        )
     assert artifact_path.exists()
 
-    changed = _preprocess_epochs(
-        prepared,
-        output,
-        eligibility=_eligibility_config(absolute_value=5e-4),
-        autoreject=None,
-        recompute="changed",
-    )
-
+    with pytest.warns(UserWarning, match="discards reviewed artifact decisions"):
+        changed = _preprocess_epochs(
+            prepared,
+            output,
+            eligibility=_eligibility_config(absolute_value=5e-4),
+            autoreject=None,
+            recompute="all",
+        )
     assert not artifact_path.exists()
     _, state = load_quality_state(quality_state_path(changed.root, "4001", "task"))
     assert state["labels"].shape == (4, 2)

@@ -196,11 +196,11 @@ class RawPipeline:
         return self
 
     def sync_eyelink(self) -> RawPipeline:
-        """Register EyeLink synchronization using the epoch construction config."""
+        """Register non-destructive EyeLink synchronization for epoch enrichment."""
         self._require_epoch_phase("sync_eyelink")
         if self._eye_loader is None:
             raise RuntimeError("sync_eyelink requires load_eyelink to be registered first.")
-        self._operations.append(_Operation("sync_eyelink"))
+        self._operations.append(_Operation("sync_eyelink", {"preserve_eeg_epochs": True}))
         return self
 
     def align_behavior(self) -> RawPipeline:

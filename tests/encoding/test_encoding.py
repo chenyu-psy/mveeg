@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import mveeg.encoding._pipeline as encoding_pipeline
 from mveeg._dataset.store import DatasetBuilder
 from mveeg.encoding import EncodingPipeline, init_pipeline
 from mveeg.encoding._analysis import encode_subject
@@ -376,7 +377,7 @@ def test_failed_subject_has_no_partial_result_rows(tmp_path):
     dataset = _build_dataset(tmp_path / "dataset", ["001"])
     result_file = tmp_path / "failed.duckdb"
     pipeline = _pipeline(dataset)
-    with pytest.raises(RuntimeError, match="No subject completed encoding"):
+    with pytest.raises(RuntimeError, match="failed for subject 001"):
         pipeline.encode(
             formula="1 + a + b",
             target="condition",
@@ -399,6 +400,114 @@ def test_failed_subject_has_no_partial_result_rows(tmp_path):
     assert status == "failed"
     assert reason
     assert tables == {"analysis", "subjects"}
+
+
+def test_pipeline_stops_after_first_subject_model_failure(tmp_path, monkeypatch):
+    dataset = _build_dataset(tmp_path / "dataset", ["001", "002", "003"])
+    result_file = tmp_path / "encoding.duckdb"
+    pipeline = _pipeline(dataset)
+    original = encoding_pipeline.encode_subject
+    calls = []
+
+    def fail_second(**kwargs):
+        calls.append(kwargs["subject"])
+        if kwargs["subject"] == "002":
+            raise ValueError("synthetic model failure")
+        return original(**kwargs)
+
+    monkeypatch.setattr(encoding_pipeline, "encode_subject", fail_second)
+    with pytest.raises(
+        RuntimeError,
+        match="Encoding model fitting failed for subject 002: synthetic model failure",
+    ):
+        pipeline.encode(
+            formula="1 + a + b",
+            target="condition",
+            conditions={"A": ["A"], "B": ["B"], "AB": ["AB"]},
+            file=result_file,
+            progress=False,
+        )
+
+    assert calls == ["001", "002"]
+    with duckdb.connect(str(result_file), read_only=True) as connection:
+        states = connection.execute(
+            "SELECT subject_index, status, reason FROM subjects ORDER BY subject_index"
+        ).fetchall()
+    assert states == [("001", "complete", None), ("002", "failed", "synthetic model failure")]
+
+
+def test_pipeline_stops_after_first_subject_preparation_failure(tmp_path, monkeypatch):
+    dataset = _build_dataset(tmp_path / "dataset", ["001", "002", "003"])
+    result_file = tmp_path / "encoding.duckdb"
+    pipeline = _pipeline(dataset)
+    original = encoding_pipeline._prepare_subject
+    calls = []
+
+    def fail_second(*args, **kwargs):
+        calls.append(kwargs["subject"])
+        if kwargs["subject"] == "002":
+            raise ValueError("synthetic preparation failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(encoding_pipeline, "_prepare_subject", fail_second)
+    with pytest.raises(
+        RuntimeError,
+        match="Encoding preparation failed for subject 002: synthetic preparation failure",
+    ):
+        pipeline.encode(
+            formula="1 + a + b",
+            target="condition",
+            conditions={"A": ["A"], "B": ["B"], "AB": ["AB"]},
+            file=result_file,
+            progress=False,
+        )
+
+    assert calls == ["001", "002"]
+    with duckdb.connect(str(result_file), read_only=True) as connection:
+        states = connection.execute(
+            "SELECT subject_index, status, reason FROM subjects ORDER BY subject_index"
+        ).fetchall()
+    assert states == [
+        ("001", "complete", None),
+        ("002", "failed", "synthetic preparation failure"),
+    ]
+
+
+def test_pipeline_stops_after_first_subject_persistence_failure(tmp_path, monkeypatch):
+    dataset = _build_dataset(tmp_path / "dataset", ["001", "002", "003"])
+    result_file = tmp_path / "encoding.duckdb"
+    pipeline = _pipeline(dataset)
+    original = encoding_pipeline.write_subject
+    calls = []
+
+    def fail_second(path, **kwargs):
+        calls.append(kwargs["subject"])
+        if kwargs["subject"] == "002":
+            raise ValueError("synthetic persistence failure")
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(encoding_pipeline, "write_subject", fail_second)
+    with pytest.raises(
+        RuntimeError,
+        match=("Encoding result persistence failed for subject 002: synthetic persistence failure"),
+    ):
+        pipeline.encode(
+            formula="1 + a + b",
+            target="condition",
+            conditions={"A": ["A"], "B": ["B"], "AB": ["AB"]},
+            file=result_file,
+            progress=False,
+        )
+
+    assert calls == ["001", "002"]
+    with duckdb.connect(str(result_file), read_only=True) as connection:
+        states = connection.execute(
+            "SELECT subject_index, status, reason FROM subjects ORDER BY subject_index"
+        ).fetchall()
+    assert states == [
+        ("001", "complete", None),
+        ("002", "failed", "synthetic persistence failure"),
+    ]
 
 
 def test_group_validation_keeps_training_and_expression_independent():
