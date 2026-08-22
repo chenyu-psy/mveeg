@@ -1,19 +1,23 @@
 # mveeg
 
-`mveeg` is a Python package for preparing EEG datasets and running multivariate
-decoding or encoding analyses. It keeps trial metadata and processing history
-with the data, makes subject-level analyses easy to resume, and writes results
-to portable DuckDB files.
+`mveeg` helps EEG researchers prepare trial-level data and run multivariate
+decoding or encoding analyses in Python. It keeps each trial linked to its
+metadata and saved processing settings, resumes analyses without repeating
+completed subjects, and stores model results in DuckDB files that can be read
+from Python or R.
 
 Preparation, decoding, and encoding are independent workflows. Use only the
 parts your study needs.
 
 ## What mveeg helps you do
 
-- Build consistent datasets from continuous recordings or existing MNE Epochs.
-- Apply eligibility checks, AutoReject, artifact rules, and manual review.
+- Build consistent trial datasets from continuous recordings or existing MNE
+  Epochs.
+- Identify unusable trials with study-defined checks, AutoReject, and manual
+  review.
 - Run multivariate decoding, temporal generalization, or linear encoding.
-- Keep trial identity and provenance consistent from preparation to results.
+- Keep trial IDs, metadata, and processing settings together from preparation
+  to results.
 
 ## Installation
 
@@ -72,7 +76,8 @@ Use `merge_metadata()` before building when behavior is stored separately.
 
 ### Preprocess and review the dataset
 
-Open a prepared dataset and write preprocessing output to a new dataset root:
+Open a prepared dataset folder and save cleaned signals and quality information
+to a separate output folder:
 
 ```python
 from mveeg import prep
@@ -85,6 +90,7 @@ preprocessed = prepared.preprocess_epochs(
     recompute="changed",
 )
 preprocessed.label_artifacts(reject=reject_rules, review=review_rules)
+preprocessed.artifact_counts()
 ```
 
 Eligibility thresholds and artifact rules are study-specific and should remain
@@ -105,8 +111,8 @@ pipeline.decode(
 )
 ```
 
-The decoding pipeline also supports QC-based trial selection, classifier
-evidence, permutations, and temporal generalization.
+The decoding pipeline can select accepted trials, save classifier scores for
+individual trials, run permutation analyses, and test temporal generalization.
 
 ### Run encoding
 
@@ -126,8 +132,19 @@ pipeline.encode(
 )
 ```
 
-Encoding results include predictors, coefficients, pattern expression, and
-model diagnostics in the output DuckDB file.
+The result file contains model coefficients, trial-level component scores, and
+diagnostics that help identify unstable fits.
+
+## Documentation
+
+- [Prepare continuous recordings](docs/preprocessing-raw.md)
+- [Prepare existing MNE Epochs](docs/preprocessing-external.md)
+- [Preprocess, label, and review artifacts](docs/quality.md)
+- [Run decoding analyses](docs/decoding.md)
+- [Run encoding analyses](docs/encoding.md)
+
+For storage details and exact result tables, see the advanced
+[dataset](docs/dataset.md) and [result-file](docs/results.md) references.
 
 ## Getting help
 
