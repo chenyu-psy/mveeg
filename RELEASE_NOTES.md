@@ -1,21 +1,24 @@
 # mveeg 0.3.1
 
-mveeg 0.3.1 fixes subject-level result persistence when dynamic trial metadata
-columns appear in a different order across subjects.
+mveeg 0.3.1 improves result reliability, artifact review, and EyeLink
+synchronization while keeping the 0.3 analysis workflows unchanged.
 
-## Fixes
+## What changed
 
-- Treat reordered trial-metadata columns as the same DuckDB schema while
-  continuing to reject missing or additional columns.
-- Preserve name-based insertion into the existing table order so values remain
-  aligned across subjects.
-- Add `decode(store_metadata=...)` to retain all, none, or selected trial
-  metadata columns while always preserving decoding identity and role columns.
-- Validate stored trial columns before fitting and reject names that collide
-  under DuckDB's case-insensitive identifier rules.
-- Stop Decoding and Encoding on the first unhandled subject failure after
-  recording its reason, matching preprocessing's existing fail-fast behavior.
-- Preserve EEG trials when EyeLink data are incomplete, marking unmatched gaze
-  channels as missing instead of silently dropping epochs.
-- Add `artifact_counts()` for notebook-friendly automatic or final artifact
-  summaries without coupling reporting to relabeling.
+- Result files now match trial metadata by column name, so subjects remain
+  aligned even when their metadata columns arrive in a different order.
+- `decode(store_metadata=...)` can save all, none, or selected trial metadata;
+  invalid or conflicting column names are reported before model fitting starts.
+- Decoding and Encoding stop at the first failed subject, save the reason, and
+  leave completed subjects ready to reuse on the next run.
+- Artifact labeling reuses unchanged label files without repeating expensive
+  calculations. Manual decisions are preserved, and reviewed labels are
+  protected before preprocessing replaces a subject.
+- `artifact_counts()` returns automatic or final label counts as a DataFrame
+  for direct display in notebooks.
+- Artifact review handles short display windows and empty review groups without
+  opening a broken figure.
+- EyeLink synchronization keeps every EEG trial when gaze data are incomplete;
+  unmatched gaze samples are marked missing instead of dropping EEG epochs.
+- EyeLink ASC files use mveeg's reader directly for consistent handling of
+  signed sample values and message markers.
