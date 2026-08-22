@@ -65,6 +65,8 @@ preprocessed.label_artifacts(
     ignore_channels=["Fp1", "Fp2"],
     recompute="changed",
 )
+
+preprocessed.artifact_counts(status="initial_status")
 ```
 
 Use `recompute="changed"` to reuse complete sidecars when the rules are
@@ -97,6 +99,8 @@ preprocessed.review_artifacts(
     group_by="initial_status",
     label="review",
 )
+
+preprocessed.artifact_counts()
 ```
 
 The call is blocking and returns `None` when the figure closes. Trial clicks
@@ -108,3 +112,5 @@ released on close.
 
 Review state is transactional and separate from the Matplotlib presentation,
 so UI changes do not alter the artifact storage contract.
+`artifact_counts()` returns per-subject counts from `final_status` by default;
+pass `status="initial_status"` to inspect automatic labels instead.

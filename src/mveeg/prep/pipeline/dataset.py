@@ -187,6 +187,29 @@ class DatasetPipeline:
             recompute=recompute,
         )
 
+    def artifact_counts(self, *, status: str = "final_status") -> pd.DataFrame:
+        """Return per-subject counts for automatic or final artifact status."""
+
+        from ..artifacts import read_artifact_table
+
+        if status not in {"initial_status", "final_status"}:
+            raise ValueError("status must be 'initial_status' or 'final_status'.")
+        rows = []
+        for subject in self.subject_indices:
+            path = self.path_for_subject(subject, "artifacts")
+            if not path.exists():
+                raise FileNotFoundError(f"No artifact sidecar exists for {subject}: {path}.")
+            counts = read_artifact_table(path)[status].value_counts()
+            rows.append(
+                {
+                    "subject": subject,
+                    "accepted": int(counts.get("accepted", 0)),
+                    "rejected": int(counts.get("rejected", 0)),
+                    "review": int(counts.get("review", 0)),
+                }
+            )
+        return pd.DataFrame(rows, columns=["subject", "accepted", "rejected", "review"])
+
     def review_artifacts(
         self,
         *,
