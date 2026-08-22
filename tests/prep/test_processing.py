@@ -88,15 +88,10 @@ def test_preprocess_label_relabel_and_dataset_review_method(tmp_path, monkeypatc
     assert autoreject["labels"].shape == (4, 2)
 
     preprocessed.label_artifacts(reject={}, review=_review_config())
-    assert capsys.readouterr().out.split() == [
-        "subject",
-        "accepted",
-        "rejected",
-        "review",
-        "4001",
-        "4",
-        "0",
-        "0",
+    assert capsys.readouterr().out == ""
+    initial = preprocessed.artifact_counts(status="initial_status")
+    assert initial.to_dict("records") == [
+        {"subject": "4001", "accepted": 4, "rejected": 0, "review": 0}
     ]
     artifact_path = preprocessed.path_for_subject("4001", "artifacts")
     first = read_artifact_table(artifact_path)
@@ -110,6 +105,11 @@ def test_preprocess_label_relabel_and_dataset_review_method(tmp_path, monkeypatc
     assert relabeled.loc[0, "final_status"] == "rejected"
     assert bool(relabeled.loc[0, "reviewed"])
     assert relabeled.loc[1:, "final_status"].tolist() == ["review"] * 3
+    final = preprocessed.artifact_counts()
+    assert final.columns.tolist() == ["subject", "accepted", "rejected", "review"]
+    assert final.to_dict("records") == [
+        {"subject": "4001", "accepted": 0, "rejected": 1, "review": 3}
+    ]
 
     captured = {"opens": 0}
 

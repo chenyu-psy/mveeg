@@ -17,3 +17,5 @@ columns appear in a different order across subjects.
   recording its reason, matching preprocessing's existing fail-fast behavior.
 - Preserve EEG trials when EyeLink data are incomplete, marking unmatched gaze
   channels as missing instead of silently dropping epochs.
+- Add `artifact_counts()` for notebook-friendly automatic or final artifact
+  summaries without coupling reporting to relabeling.

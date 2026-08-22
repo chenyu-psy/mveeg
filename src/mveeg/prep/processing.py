@@ -8,7 +8,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 from .._dataset.manifest import MANIFEST_COLUMNS, read_json, relative_paths
 from .._dataset.store import (
@@ -156,7 +155,7 @@ def label_artifacts(
     ignore_channels: Sequence[str] = (),
     recompute: str = "all",
 ) -> DatasetPipeline:
-    """Create or refresh artifact sidecars and print automatic status counts.
+    """Create or refresh artifact sidecars.
 
     Parameters
     ----------
@@ -175,11 +174,6 @@ def label_artifacts(
     DatasetPipeline
         Refreshed dataset with artifact paths recorded in its manifest.
 
-    Notes
-    -----
-    The printed per-subject table counts ``initial_status`` values from this
-    automatic labeling run; preserved manual decisions remain in
-    ``final_status``.
     """
 
     if recompute not in RECOMPUTE_VALUES:
@@ -226,7 +220,7 @@ def label_artifacts(
             "sidecars.",
             stacklevel=2,
         )
-    status_counts = []
+    wrote = False
     for subject_index in dataset.subject_indices:
         artifact_path = artifact_paths[subject_index]
         if artifact_path.exists() and (
@@ -272,22 +266,14 @@ def label_artifacts(
             ignore_channels=ignore_channels,
             previous=previous,
         )
-        counts = table["initial_status"].value_counts()
-        status_counts.append(
-            {
-                "subject": str(subject_index),
-                "accepted": int(counts.get("accepted", 0)),
-                "rejected": int(counts.get("rejected", 0)),
-                "review": int(counts.get("review", 0)),
-            }
-        )
         write_artifact_table(table, artifact_path)
+        wrote = True
         relative = artifact_path.relative_to(dataset.root).as_posix()
         manifest.loc[
             manifest["subject_index"].astype(str).eq(str(subject_index)),
             "artifacts_path",
         ] = relative
-    if not status_counts:
+    if not wrote:
         return dataset.refresh()
 
     write_table_atomic(manifest[MANIFEST_COLUMNS], dataset.root / "manifest.tsv")
@@ -299,12 +285,6 @@ def label_artifacts(
                 **labeling,
             }
         },
-    )
-    print(
-        pd.DataFrame(
-            status_counts,
-            columns=["subject", "accepted", "rejected", "review"],
-        ).to_string(index=False)
     )
     return dataset.refresh()
 
