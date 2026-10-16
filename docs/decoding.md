@@ -228,3 +228,14 @@ transactionally with complete schema-2 results.
 
 Common transaction, version, fixed-column, and unitless channel-coordinate
 rules are documented once in the [DuckDB result contract](results.md).
+
+## Dataset-level subject selection
+
+Record shared exclusions once after preprocessing and manual review with
+`prep.open_pipeline(dataset).select_subjects(exclude={"4001": "Poor signal"})`.
+This pipeline automatically reads the saved exclusions on every execution;
+no additional analysis configuration is needed. Excluded subjects remain in
+`subject_indices`, but are skipped before loading or fitting. Existing results
+are retained with `recompute="never"` and deleted with `"changed"` or `"all"`.
+See [the review workflow](quality.md#subject-selection-after-review) and
+[the result contract](results.md#dataset-level-subject-exclusions).

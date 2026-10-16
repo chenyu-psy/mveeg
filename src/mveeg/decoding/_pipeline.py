@@ -20,7 +20,9 @@ from .._dataset.manifest import (
     subject_paths,
 )
 from .._dataset.metadata import assign_metadata_variables, validate_metadata_variables
+from .._dataset.selection import read_subject_selection
 from .._provenance import fingerprint, fingerprint_files
+from .._results.store import delete_subject
 from ._analysis import SubjectDecoding, decode_subject
 from ._models import classifier_settings
 from ._prepare import (
@@ -30,6 +32,7 @@ from ._prepare import (
     validate_groups,
 )
 from ._storage import (
+    SUBJECT_TABLES,
     _LegacyDecodingSchema,
     completed_subjects,
     initialize_store,
@@ -273,12 +276,20 @@ class DecodingPipeline:
             reset=reset,
         )
 
-        fingerprints = {
-            subject: _input_fingerprint(self, subject) for subject in self.subject_indices
-        }
         saved = subject_state(path)
+        if recompute != "never":
+            for subject in self._excluded_subjects:
+                if subject in saved:
+                    delete_subject(path, subject, subject_tables=SUBJECT_TABLES)
+        included_subjects = [
+            subject for subject in self.subject_indices if subject not in self._excluded_subjects
+        ]
+        if not included_subjects:
+            warnings.warn("All subjects are excluded; no subjects to analyze.", stacklevel=2)
+            return None
+        fingerprints = {subject: _input_fingerprint(self, subject) for subject in included_subjects}
         subjects = []
-        for subject in self.subject_indices:
+        for subject in included_subjects:
             status, previous = saved.get(subject, ("missing", None))
             changed = previous != fingerprints[subject]
             if recompute == "all" or status != "complete" or (recompute == "changed" and changed):
@@ -364,6 +375,8 @@ class DecodingPipeline:
 
     def _refresh_dataset(self) -> None:
         self._manifest = load_validated_manifest(self.dataset)
+        selection = read_subject_selection(self.dataset, self.subject_indices)
+        self._excluded_subjects = frozenset(selection["subject_index"])
         self.task = str(self._manifest["task"].iloc[0])
         self.stage = str(self._manifest["stage"].iloc[0])
         if self.stage not in {"prepared", "preprocessed"}:

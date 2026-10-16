@@ -100,12 +100,7 @@ def mark_pending(
     with duckdb.connect(str(path)) as connection:
         connection.execute("BEGIN TRANSACTION")
         try:
-            for table in subject_tables:
-                if table_exists(connection, table):
-                    connection.execute(
-                        f'DELETE FROM "{table}" WHERE subject_index = ?', [subject_index]
-                    )
-            connection.execute("DELETE FROM subjects WHERE subject_index = ?", [subject_index])
+            _delete_subject_rows(connection, subject_index, subject_tables)
             connection.execute(
                 "INSERT INTO subjects VALUES (?, 'pending', ?, NULL, ?)",
                 [subject_index, fingerprint, now()],
@@ -114,6 +109,31 @@ def mark_pending(
         except Exception:
             connection.execute("ROLLBACK")
             raise
+
+
+def delete_subject(path: Path, subject_index: str, *, subject_tables: tuple[str, ...]) -> None:
+    """Atomically remove a subject's results and state without scheduling work."""
+
+    with duckdb.connect(str(path)) as connection:
+        connection.execute("BEGIN TRANSACTION")
+        try:
+            _delete_subject_rows(connection, subject_index, subject_tables)
+            connection.execute("UPDATE analysis SET updated = ?", [now()])
+            connection.execute("COMMIT")
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+
+
+def _delete_subject_rows(
+    connection: duckdb.DuckDBPyConnection,
+    subject_index: str,
+    subject_tables: tuple[str, ...],
+) -> None:
+    for table in subject_tables:
+        if table_exists(connection, table):
+            connection.execute(f'DELETE FROM "{table}" WHERE subject_index = ?', [subject_index])
+    connection.execute("DELETE FROM subjects WHERE subject_index = ?", [subject_index])
 
 
 def mark_failed(path: Path, subject_index: str, fingerprint: str, reason: str) -> None:

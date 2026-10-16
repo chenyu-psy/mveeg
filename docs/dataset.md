@@ -30,7 +30,8 @@ Dataset schema 2 contains:
 - `provenance.json`, dataset schema, pipeline, task, stage, and optional gaze geometry;
 - `dataset_description.json`, task and stage summary;
 - one epochs FIF, events TSV, and EEG JSON per subject;
-- an optional quality/artifact TSV per subject.
+- an optional quality/artifact TSV per subject;
+- optional `subject_selection.tsv`, the complete dataset-level exclusion list.
 
 The manifest records `subject_index`, task, stage, epoch/channel/time geometry,
 relative paths, the subject input fingerprint, and the dataset pipeline
@@ -38,7 +39,8 @@ fingerprint. Paths in the manifest are authoritative; readers do not discover
 unlisted sidecars.
 
 `DatasetPipeline` provides subject enumeration, path lookup, epoch loading,
-gaze configuration, preprocessing, artifact labeling, and artifact review.
+gaze configuration, preprocessing, artifact labeling, artifact review, and
+subject selection.
 `DatasetBuilder` remains private because partial dataset construction is not a
 public workflow.
 
@@ -85,3 +87,21 @@ and non-finite numbers are rejected; there is no `repr()` fallback.
 The package version has one source of truth, `pyproject.toml`. Dataset schema
 changes only when the stored format becomes incompatible; it does not track
 ordinary package releases.
+
+## Subject exclusion contract
+
+`DatasetPipeline.select_subjects(exclude={subject_index: reason})` atomically
+replaces `subject_selection.tsv`. Its ordered columns are `subject_index`
+(string) and `reason` (string), with one row per excluded subject. The file
+uses UTF-8 TSV with standard quoting. An absent, zero-length, or header-only
+file excludes nobody. Invalid columns, malformed rows, duplicate normalized
+indices, and indices absent from the manifest are rejected by model readers.
+
+Selection is independent of dataset schema 2's manifest and signal files.
+`subject_indices` continues to enumerate every manifest subject, and excluded
+data remain loadable. The list belongs only to this root and is preserved
+when its existing dataset files are rebuilt; it is not inherited by a new
+output root. Review the reasons again if preprocessing changes the data on
+which the exclusion decision was based. See [quality](quality.md#subject-selection-after-review)
+for the post-review workflow and [results](results.md#dataset-level-subject-exclusions)
+for saved-result behavior.

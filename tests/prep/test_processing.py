@@ -174,6 +174,68 @@ def test_artifact_recompute_changed_reuses_complete_sidecars(tmp_path, monkeypat
     assert artifact_path.stat().st_mtime_ns == before_mtime
 
 
+def test_artifact_recompute_never_preserves_labeling_provenance(tmp_path):
+    prepared = _prepared_dataset(tmp_path)
+    preprocessed = _preprocess_epochs(
+        prepared,
+        tmp_path / "preprocessed",
+        eligibility=_eligibility_config(),
+        autoreject=None,
+    )
+    preprocessed.label_artifacts(reject={}, review=_review_config(), recompute="changed")
+    artifact_path = preprocessed.path_for_subject("4001", "artifacts")
+    before = artifact_path.read_bytes()
+    provenance_path = preprocessed.root / "provenance.json"
+    before_provenance = provenance_path.read_bytes()
+    updated_review = _review_config(threshold=0)
+
+    with pytest.warns(UserWarning, match="preserves existing sidecars"):
+        preprocessed.label_artifacts(reject={}, review=updated_review, recompute="never")
+
+    assert artifact_path.read_bytes() == before
+    assert provenance_path.read_bytes() == before_provenance
+
+    preprocessed.label_artifacts(reject={}, review=updated_review, recompute="changed")
+
+    assert artifact_path.read_bytes() != before
+    provenance = json.loads(provenance_path.read_text())
+    assert provenance["artifact_labeling"]["review"]["eeg"] == updated_review["eeg"]
+
+
+def test_changed_labels_with_identical_sidecar_do_not_rewrite(tmp_path, monkeypatch):
+    prepared = _prepared_dataset(tmp_path)
+    preprocessed = _preprocess_epochs(
+        prepared,
+        tmp_path / "preprocessed",
+        eligibility=_eligibility_config(),
+        autoreject=None,
+    )
+    preprocessed.label_artifacts(reject={}, review=_review_config(), recompute="changed")
+    artifact_path = preprocessed.path_for_subject("4001", "artifacts")
+    before = artifact_path.read_bytes()
+    before_mtime = artifact_path.stat().st_mtime_ns
+    provenance_path = preprocessed.root / "provenance.json"
+    first_fingerprint = json.loads(provenance_path.read_text())["artifact_labeling"]["fingerprint"]
+
+    updated_review = _review_config(threshold=2e-3)
+    preprocessed.label_artifacts(reject={}, review=updated_review, recompute="changed")
+
+    provenance = json.loads(provenance_path.read_text())
+    assert artifact_path.read_bytes() == before
+    assert artifact_path.stat().st_mtime_ns == before_mtime
+    assert provenance["artifact_labeling"]["fingerprint"] != first_fingerprint
+    assert provenance["artifact_labeling"]["review"] == {
+        **updated_review,
+        "time_window": list(updated_review["time_window"]),
+    }
+
+    def fail_load(*args, **kwargs):
+        raise AssertionError("saved labeling configuration must not relabel subjects again")
+
+    monkeypatch.setattr(preprocessed, "load_epochs", fail_load)
+    preprocessed.label_artifacts(reject={}, review=updated_review, recompute="changed")
+
+
 def test_changed_preprocessing_protects_reviewed_artifacts(tmp_path):
     prepared = _prepared_dataset(tmp_path)
     output = tmp_path / "preprocessed"
