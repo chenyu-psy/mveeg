@@ -266,26 +266,26 @@ def label_artifacts(
             ignore_channels=ignore_channels,
             previous=previous,
         )
-        write_artifact_table(table, artifact_path)
-        wrote = True
-        relative = artifact_path.relative_to(dataset.root).as_posix()
-        manifest.loc[
-            manifest["subject_index"].astype(str).eq(str(subject_index)),
-            "artifacts_path",
-        ] = relative
-    if not wrote:
-        return dataset.refresh()
-
-    write_table_atomic(manifest[MANIFEST_COLUMNS], dataset.root / "manifest.tsv")
-    _extend_provenance(
-        dataset.root,
-        {
-            "artifact_labeling": {
-                "fingerprint": labeling_fingerprint,
-                **labeling,
-            }
-        },
-    )
+        if previous is None or not table.equals(previous):
+            write_artifact_table(table, artifact_path)
+            wrote = True
+            relative = artifact_path.relative_to(dataset.root).as_posix()
+            manifest.loc[
+                manifest["subject_index"].astype(str).eq(str(subject_index)),
+                "artifacts_path",
+            ] = relative
+    if wrote:
+        write_table_atomic(manifest[MANIFEST_COLUMNS], dataset.root / "manifest.tsv")
+    if wrote or (labeling_changed and recompute != "never"):
+        _extend_provenance(
+            dataset.root,
+            {
+                "artifact_labeling": {
+                    "fingerprint": labeling_fingerprint,
+                    **labeling,
+                }
+            },
+        )
     return dataset.refresh()
 
 
