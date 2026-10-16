@@ -736,3 +736,61 @@ def test_raw_pipeline_requires_real_phase_dependencies(tmp_path) -> None:
     pipeline.make_epochs(event_id={"stim": 1}, time_window=(0, 1))
     pipeline.load_behavior("*.csv")
     pipeline.align_behavior()
+
+
+def test_subject_selection_persists_without_hiding_data(tmp_path, monkeypatch):
+    from mveeg._dataset.selection import read_subject_selection
+
+    prepared = init_external(subject_index="001", data=_epochs()).build_epochs(
+        tmp_path / "prepared", task="task"
+    )
+    eligibility = {"eeg": {"absolute_value": 1.0, "step": 1.0, "p2p": 1.0, "bad_channels": 2}}
+    dataset = prepared.preprocess_epochs(tmp_path / "preprocessed", eligibility=eligibility)
+    assert read_subject_selection(dataset.root, dataset.subject_indices).empty
+    assert dataset.select_subjects(exclude={"sub-001": "有效试次不足"}) is dataset
+    saved = (dataset.root / "subject_selection.tsv").read_bytes()
+    reopened = open_pipeline(dataset.root)
+    assert reopened.subject_indices == ("001",)
+    assert len(reopened.manifest) == 1
+    assert len(reopened.load_epochs("001")) == 3
+    selection = read_subject_selection(reopened.root, reopened.subject_indices)
+    assert selection.to_dict("records") == [{"subject_index": "001", "reason": "有效试次不足"}]
+    dataset.label_artifacts(reject={}, review=eligibility)
+    reviewed = []
+    monkeypatch.setattr(
+        "mveeg.prep.review.figure.open_review_figure",
+        lambda session, epochs, **kwargs: reviewed.append(len(epochs)),
+    )
+    dataset.review_artifacts(subject_index="001")
+    assert reviewed == [3]
+    dataset.select_subjects(exclude={"001": "整体质量差"})
+    dataset.select_subjects(exclude={"001": "有效试次不足"})
+    assert (dataset.root / "subject_selection.tsv").read_bytes() == saved
+    dataset = prepared.preprocess_epochs(dataset.root, eligibility=eligibility, recompute="all")
+    assert (dataset.root / "subject_selection.tsv").read_bytes() == saved
+    dataset.label_artifacts(reject={}, review=eligibility)
+    assert (dataset.root / "subject_selection.tsv").read_bytes() == saved
+    fresh = prepared.preprocess_epochs(tmp_path / "fresh", eligibility=eligibility)
+    assert read_subject_selection(fresh.root, fresh.subject_indices).empty
+    dataset.select_subjects(exclude={})
+    assert read_subject_selection(dataset.root, dataset.subject_indices).empty
+
+
+@pytest.mark.parametrize(
+    "exclude, error, message",
+    [
+        ({"001": "one", "sub-001": "two"}, ValueError, "duplicate"),
+        ({"002": "unknown"}, ValueError, "unknown"),
+        ({"001": None}, TypeError, "reasons"),
+        (["001"], TypeError, "map subject"),
+    ],
+)
+def test_subject_selection_rejects_invalid_updates_atomically(tmp_path, exclude, error, message):
+    dataset = init_external(subject_index="001", data=_epochs()).build_epochs(
+        tmp_path / "prepared", task="task"
+    )
+    dataset.select_subjects(exclude={"001": "keep this exclusion"})
+    saved = (dataset.root / "subject_selection.tsv").read_bytes()
+    with pytest.raises(error, match=message):
+        dataset.select_subjects(exclude=exclude)
+    assert (dataset.root / "subject_selection.tsv").read_bytes() == saved

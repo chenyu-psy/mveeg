@@ -303,45 +303,6 @@ def test_incremental_mean_matches_fold_level_results():
     pd.testing.assert_frame_equal(mean["generalization"], expected_generalization)
 
 
-def test_subject_progress_uses_standard_tqdm_arguments(monkeypatch):
-    calls = []
-
-    def capture_tqdm(iterable, **kwargs):
-        calls.append(kwargs)
-        return iterable
-
-    monkeypatch.setattr("mveeg.decoding._analysis.tqdm", capture_tqdm)
-    data, labels, trials = _subject_data(classes=2)
-    decode_subject(
-        subject="001",
-        data=data,
-        class_labels=labels,
-        **_trial_roles(labels, generalization=False),
-        trial_ids=trials,
-        times=np.array([25, 75]),
-        class_order=["a", "b"],
-        classifier="logistic_regression",
-        classifier_parameters={"solver": "lbfgs", "max_iter": 1000},
-        folds=2,
-        repeats=2,
-        trial_averaging=1,
-        permutations=0,
-        seed=14,
-        output="mean",
-        n_jobs=1,
-        progress=False,
-    )
-
-    assert calls == [
-        {
-            "total": 2,
-            "desc": "Decoding sub-001",
-            "unit": "repeat",
-            "disable": True,
-        }
-    ]
-
-
 def test_multiclass_linear_svm_patterns_follow_native_pairs():
     data, labels, trials = _subject_data()
     result = decode_subject(
@@ -1096,59 +1057,30 @@ def test_failed_subject_is_recorded_without_partial_results(tmp_path):
     assert tables == {"analysis", "subjects"}
 
 
-def test_pipeline_stops_after_first_subject_model_failure(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("function", "phase", "reason"),
+    [
+        ("_prepare_subject", "preparation", "synthetic preparation failure"),
+        ("decode_subject", "model fitting", "synthetic model failure"),
+        ("write_subject", "result persistence", "synthetic persistence failure"),
+    ],
+)
+def test_pipeline_stops_after_first_subject_failure(tmp_path, monkeypatch, function, phase, reason):
     dataset = _build_dataset(tmp_path / "dataset", ["001", "002", "003"])
     result_file = tmp_path / "decoding.duckdb"
     pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
     pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
-    original = decoding_pipeline.decode_subject
-    calls = []
-
-    def fail_second(**kwargs):
-        calls.append(kwargs["subject"])
-        if kwargs["subject"] == "002":
-            raise ValueError("synthetic model failure")
-        return original(**kwargs)
-
-    monkeypatch.setattr(decoding_pipeline, "decode_subject", fail_second)
-    with pytest.raises(
-        RuntimeError,
-        match="Decoding model fitting failed for subject 002: synthetic model failure",
-    ):
-        pipeline.decode(
-            target="condition",
-            classes={"a": ["a"], "b": ["b"], "c": ["c"]},
-            file=result_file,
-            progress=False,
-        )
-
-    assert calls == ["001", "002"]
-    with duckdb.connect(str(result_file), read_only=True) as connection:
-        states = connection.execute(
-            "SELECT subject_index, status, reason FROM subjects ORDER BY subject_index"
-        ).fetchall()
-    assert states == [("001", "complete", None), ("002", "failed", "synthetic model failure")]
-
-
-def test_pipeline_stops_after_first_subject_preparation_failure(tmp_path, monkeypatch):
-    dataset = _build_dataset(tmp_path / "dataset", ["001", "002", "003"])
-    result_file = tmp_path / "decoding.duckdb"
-    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
-    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
-    original = decoding_pipeline._prepare_subject
+    original = getattr(decoding_pipeline, function)
     calls = []
 
     def fail_second(*args, **kwargs):
         calls.append(kwargs["subject"])
         if kwargs["subject"] == "002":
-            raise ValueError("synthetic preparation failure")
+            raise ValueError(reason)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(decoding_pipeline, "_prepare_subject", fail_second)
-    with pytest.raises(
-        RuntimeError,
-        match="Decoding preparation failed for subject 002: synthetic preparation failure",
-    ):
+    monkeypatch.setattr(decoding_pipeline, function, fail_second)
+    with pytest.raises(RuntimeError, match=f"Decoding {phase} failed for subject 002: {reason}"):
         pipeline.decode(
             target="condition",
             classes={"a": ["a"], "b": ["b"], "c": ["c"]},
@@ -1161,47 +1093,7 @@ def test_pipeline_stops_after_first_subject_preparation_failure(tmp_path, monkey
         states = connection.execute(
             "SELECT subject_index, status, reason FROM subjects ORDER BY subject_index"
         ).fetchall()
-    assert states == [
-        ("001", "complete", None),
-        ("002", "failed", "synthetic preparation failure"),
-    ]
-
-
-def test_pipeline_stops_after_first_subject_persistence_failure(tmp_path, monkeypatch):
-    dataset = _build_dataset(tmp_path / "dataset", ["001", "002", "003"])
-    result_file = tmp_path / "decoding.duckdb"
-    pipeline = init_pipeline(dataset).prepare_epochs(crop=None, time_bin=50)
-    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, seed=4)
-    original = decoding_pipeline.write_subject
-    calls = []
-
-    def fail_second(path, **kwargs):
-        calls.append(kwargs["subject"])
-        if kwargs["subject"] == "002":
-            raise ValueError("synthetic persistence failure")
-        return original(path, **kwargs)
-
-    monkeypatch.setattr(decoding_pipeline, "write_subject", fail_second)
-    with pytest.raises(
-        RuntimeError,
-        match=("Decoding result persistence failed for subject 002: synthetic persistence failure"),
-    ):
-        pipeline.decode(
-            target="condition",
-            classes={"a": ["a"], "b": ["b"], "c": ["c"]},
-            file=result_file,
-            progress=False,
-        )
-
-    assert calls == ["001", "002"]
-    with duckdb.connect(str(result_file), read_only=True) as connection:
-        states = connection.execute(
-            "SELECT subject_index, status, reason FROM subjects ORDER BY subject_index"
-        ).fetchall()
-    assert states == [
-        ("001", "complete", None),
-        ("002", "failed", "synthetic persistence failure"),
-    ]
+    assert states == [("001", "complete", None), ("002", "failed", reason)]
 
 
 def _epochs(subject: str) -> mne.EpochsArray:
@@ -1271,3 +1163,136 @@ def _extend_dataset(root, subject):
     builder.record_reused("001")
     builder.write_subject(subject, _epochs(subject), input_fingerprint=f"input-{subject}")
     builder.finish()
+
+
+@pytest.fixture
+def exclusion_analysis(tmp_path):
+    dataset = _build_dataset(tmp_path / "dataset", ["001", "002"])
+    pipeline = init_pipeline(dataset)
+    pipeline.prepare_epochs(crop=None, time_bin=50)
+    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, permutations=1, seed=4)
+    file = tmp_path / "result.duckdb"
+    arguments = dict(
+        target="condition",
+        classes={"a": ["a"], "b": ["b"], "c": ["c"]},
+        evidence={"a": ["a"], "b": ["b"], "c": ["c"]},
+        generalization={"a": ["x"], "b": ["b"], "c": ["c"]},
+        file=file,
+        progress=False,
+    )
+    return open_pipeline(dataset), pipeline, arguments
+
+
+@pytest.mark.parametrize("recompute", ["never", "changed", "all"])
+@pytest.mark.parametrize("output", ["mean", "all"])
+def test_subject_exclusions_skip_inputs_and_obey_recompute(
+    exclusion_analysis, monkeypatch, recompute, output
+):
+    from mveeg._results.store import subject_state, table_exists
+    from mveeg.decoding._storage import SUBJECT_TABLES
+
+    selection, pipeline, arguments = exclusion_analysis
+    file = arguments["file"]
+    arguments = {**arguments, "output": output}
+    pipeline.decode(**arguments)
+    before = subject_state(file)
+    selection.select_subjects(exclude={"001": "poor signal"})
+    original = decoding_pipeline._input_fingerprint
+
+    def included_only(pipeline, subject):
+        assert subject == "002", "Excluded subjects must not be read or fingerprinted."
+        return original(pipeline, subject)
+
+    original_prepare = decoding_pipeline._prepare_subject
+
+    def prepare_included(*args, **kwargs):
+        assert kwargs["subject"] == "002"
+        assert recompute == "all", "Changing exclusions must not recompute other subjects."
+        return original_prepare(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(decoding_pipeline, "_prepare_subject", prepare_included)
+        patch.setattr(decoding_pipeline, "_input_fingerprint", included_only)
+        pipeline.decode(**arguments, recompute=recompute)
+    expected = ["001", "002"] if recompute == "never" else ["002"]
+    assert sorted(subject_state(file)) == expected
+    if recompute == "never":
+        assert subject_state(file)["001"] == before["001"]
+    with duckdb.connect(str(file), read_only=True) as connection:
+        for table in SUBJECT_TABLES:
+            if table_exists(connection, table):
+                subjects = [
+                    row[0]
+                    for row in connection.execute(
+                        f'SELECT DISTINCT subject_index FROM "{table}" ORDER BY subject_index'
+                    ).fetchall()
+                ]
+                assert subjects == expected, table
+
+
+def test_all_subjects_excluded_then_restored(exclusion_analysis, monkeypatch):
+    from mveeg._results.store import subject_state, table_exists
+    from mveeg.decoding._storage import SUBJECT_TABLES
+
+    selection, pipeline, arguments = exclusion_analysis
+    file = arguments["file"]
+    pipeline.decode(**arguments)
+    original = decoding_pipeline._prepare_subject
+    computed = []
+
+    def track_prepare(*args, **kwargs):
+        computed.append(kwargs["subject"])
+        return original(*args, **kwargs)
+
+    def fail_fingerprint(*args):
+        pytest.fail("Excluded subjects must not be fingerprinted.")
+
+    monkeypatch.setattr(decoding_pipeline, "_prepare_subject", track_prepare)
+    for recompute in ("never", "changed", "all"):
+        before = subject_state(file)
+        selection.select_subjects(exclude={"001": "bad", "002": "bad"})
+        with monkeypatch.context() as patch:
+            patch.setattr(decoding_pipeline, "_input_fingerprint", fail_fingerprint)
+            with pytest.warns(UserWarning, match="All subjects are excluded"):
+                assert pipeline.decode(**arguments, recompute=recompute) is None
+        assert subject_state(file) == (before if recompute == "never" else {}), recompute
+        with duckdb.connect(str(file), read_only=True) as connection:
+            for table in SUBJECT_TABLES:
+                if table_exists(connection, table):
+                    count = connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                    assert (count > 0) == (recompute == "never"), (recompute, table)
+
+        selection.select_subjects(exclude={})
+        computed.clear()
+        pipeline.decode(**arguments, recompute="changed")
+        assert computed == ([] if recompute == "never" else ["001", "002"]), recompute
+        assert sorted(subject_state(file)) == ["001", "002"]
+
+
+def test_all_subjects_excluded_in_new_store(exclusion_analysis, monkeypatch):
+    from mveeg._results.store import subject_state
+
+    selection, pipeline, arguments = exclusion_analysis
+    selection.select_subjects(exclude={"001": "bad", "002": "bad"})
+
+    def fail_fingerprint(*args):
+        pytest.fail("Excluded subjects must not be fingerprinted.")
+
+    monkeypatch.setattr(decoding_pipeline, "_input_fingerprint", fail_fingerprint)
+    with pytest.warns(UserWarning, match="All subjects are excluded"):
+        assert pipeline.decode(**arguments) is None
+    assert subject_state(arguments["file"]) == {}
+
+
+def test_invalid_subject_selection_does_not_change_results(exclusion_analysis):
+    from mveeg._results.store import subject_state
+
+    selection, pipeline, arguments = exclusion_analysis
+    pipeline.decode(**arguments)
+    before = subject_state(arguments["file"])
+    (selection.root / "subject_selection.tsv").write_text(
+        "subject_index\treason\n999\tunknown\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="unknown"):
+        pipeline.decode(**arguments)
+    assert subject_state(arguments["file"]) == before

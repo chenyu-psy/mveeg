@@ -6,6 +6,7 @@ import pytest
 
 from mveeg._results.store import (
     create_subjects_table,
+    delete_subject,
     insert_frame,
     mark_failed,
     mark_pending,
@@ -87,3 +88,33 @@ def test_insert_frame_rejects_different_columns(frame):
             insert_frame(connection, "scores", frame)
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize("broken", [False, True])
+def test_subject_deletion_is_atomic_and_keeps_other_subjects(tmp_path, broken):
+    path = tmp_path / "result.duckdb"
+    with duckdb.connect(str(path)) as connection:
+        connection.execute("CREATE TABLE analysis (updated VARCHAR)")
+        connection.execute("INSERT INTO analysis VALUES ('created')")
+        create_subjects_table(connection)
+        connection.execute("INSERT INTO subjects VALUES ('001', 'complete', 'f', NULL, 'created')")
+        connection.execute("INSERT INTO subjects VALUES ('002', 'complete', 'f', NULL, 'created')")
+        connection.execute("CREATE TABLE scores (subject_index VARCHAR, score DOUBLE)")
+        connection.execute("INSERT INTO scores VALUES ('001', 1.0), ('002', 2.0)")
+        connection.execute("CREATE TABLE broken (score DOUBLE)")
+    if broken:
+        with pytest.raises(duckdb.BinderException):
+            delete_subject(path, "001", subject_tables=("scores", "broken"))
+    else:
+        delete_subject(path, "001", subject_tables=("scores", "absent"))
+    expected = ["001", "002"] if broken else ["002"]
+    assert sorted(subject_state(path)) == expected
+    with duckdb.connect(str(path), read_only=True) as connection:
+        assert [
+            row[0]
+            for row in connection.execute(
+                "SELECT subject_index FROM scores ORDER BY subject_index"
+            ).fetchall()
+        ] == expected
+        if broken:
+            assert connection.execute("SELECT updated FROM analysis").fetchone() == ("created",)

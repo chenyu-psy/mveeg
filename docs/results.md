@@ -63,3 +63,30 @@ configuration requires `recompute="all"` or a different result file.
 Generated seeds are stored and reused by later compatible runs. Decoding and
 Encoding deliberately retain their own subject-seed/RNG algorithms because
 they are independent analyses.
+
+## Dataset-level subject exclusions
+
+Encoding and decoding read the input dataset's `subject_selection.tsv` on
+every execution. Excluded subjects are skipped before data loading, derived
+metadata evaluation, fingerprinting, or fitting. Exclusion decisions do not
+change the analysis configuration fingerprint or force other subjects to
+recompute.
+
+| `recompute` | Existing rows for an excluded subject | New computation |
+| --- | --- | --- |
+| `never` | Retained | Skipped |
+| `changed` | Deleted | Skipped |
+| `all` | Deleted | Skipped |
+
+Deletion removes that subject's rows from every model-specific subject table
+and from `subjects` in one transaction; shared classifier, channel, component,
+and time-bin definitions remain. Selection changes take effect in an existing
+result file only when that analysis is run again. With `never`, saved results
+can therefore still contain excluded subjects. Other analysis-setting
+compatibility checks continue to apply, including a full reset for incompatible
+settings with `all`.
+
+When a subject is restored, missing results are computed and retained results
+follow the existing recomputation rules. When everyone is excluded, the run
+performs any required cleanup, warns, and returns `None`, even for a new empty
+result store.
