@@ -205,10 +205,11 @@ def compare_subject(
             mask = labels[train] == c
             residuals[mask] -= residuals[mask].mean(axis=0, keepdims=True)
         degrees = int(train.sum()) - len(conditions)
-        if degrees < 2:
+        if degrees <= 2:
             raise ValueError(
-                f"Groups excluding {first!r}, {second!r} leave fewer than two "
-                "within-condition noise degrees of freedom; more repetitions/groups are needed."
+                f"Groups excluding {first!r}, {second!r} leave at most two "
+                "within-condition noise degrees of freedom; the inverse-variance mean "
+                "diverges under Gaussian noise. At least three are required."
             )
         for ti, time in enumerate(times):
             precision, rank, shrinkage, condition_number = noise_precision(
@@ -242,12 +243,22 @@ def compare_subject(
                 }
             )
     diagnostics = pd.DataFrame(diagnostics)
-    if diagnostics.noise_df.min() < data.shape[1]:
+    minimum_df = diagnostics.noise_df.min()
+    if minimum_df <= 4 or minimum_df < data.shape[1]:
+        moment_warning = (
+            "Gaussian inverse-variance second moments can diverge at df <= 4. "
+            if minimum_df <= 4
+            else ""
+        )
+        sample_warning = (
+            f"Noise information may be sample-limited relative to {data.shape[1]} channels. "
+            if minimum_df < data.shape[1]
+            else ""
+        )
         warnings.warn(
             f"Subject {subject}: complement noise df range "
-            f"{diagnostics.noise_df.min()}..{diagnostics.noise_df.max()} is below "
-            f"{data.shape[1]} retained channels for at least one pair, so noise "
-            "information may be sample-limited. Full-channel shrinkage fills "
+            f"{minimum_df}..{diagnostics.noise_df.max()}. "
+            f"{moment_warning}{sample_warning}Full-channel shrinkage fills "
             "sample-null directions; population precision and model "
             "rankings may remain uncertain. Inspect covariance_diagnostics.",
             RuntimeWarning,

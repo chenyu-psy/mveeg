@@ -1,6 +1,7 @@
 """Scientific contracts for independent condition-subspace strength."""
 
 import json
+import warnings
 
 import duckdb
 import numpy as np
@@ -204,6 +205,49 @@ def test_complement_df_warning_and_no_noise_information_failure():
         _compare(data[selected], metadata.iloc[selected], labels[selected], groups[selected])
 
 
+def _few_channel_comparison(noise_df):
+    counts = [2, noise_df]
+    labels = np.tile(np.repeat(["A", "B"], counts), 3).astype(object)
+    groups = np.repeat(np.arange(3), sum(counts))
+    data = np.random.default_rng(71).normal(size=(len(labels), 1, 1))
+    return compare_subject(
+        subject="001",
+        data=data,
+        metadata=pd.DataFrame({"a": labels == "B"}),
+        labels=labels,
+        trial_ids=np.arange(len(labels)),
+        times=np.array([25]),
+        conditions=["A", "B"],
+        models={"null": "1", "a": "a"},
+        nuisance=None,
+        weights={"A": 0.5, "B": 0.5},
+        groups=groups,
+        folds=3,
+        seed=5,
+    )
+
+
+def test_exactly_two_noise_df_rejected_even_with_one_channel():
+    with pytest.raises(ValueError, match="inverse-variance mean"):
+        _few_channel_comparison(2)
+
+
+@pytest.mark.parametrize("noise_df", [3, 4])
+def test_three_four_noise_df_warn_even_with_one_channel(noise_df):
+    with pytest.warns(RuntimeWarning, match="second moments can diverge") as recorded:
+        result = _few_channel_comparison(noise_df)
+    assert len(recorded) == 1
+    assert result["covariance_diagnostics"].noise_df.eq(noise_df).all()
+
+
+def test_five_noise_df_few_channels_has_no_boundary_warning():
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        result = _few_channel_comparison(5)
+    assert not recorded
+    assert result["covariance_diagnostics"].noise_df.eq(5).all()
+
+
 def test_sparse_confounded_and_trial_varying_designs_rejected():
     data, metadata, labels, groups = _arrays()
     with pytest.raises(ValueError, match="at least three"):
@@ -240,6 +284,7 @@ def test_comparison_store_paired_metadata_resume_and_config(tmp_path):
         config = json.loads(connection.execute("SELECT config FROM analysis").fetchone()[0])
         assert config["analysis_kind"] == "subspace_strength"
         assert config["estimator_version"] == 2
+        assert config["minimum_noise_df"] == 3
         assert config["precision"] == "leave_two_groups_out_full_channel_correlation_shrinkage"
         assert config["weights"] == {"A": 1 / 3, "AB": 1 / 3, "B": 1 / 3}
         assert connection.execute("SELECT COUNT(*) FROM trial_groups").fetchone()[0] == 18

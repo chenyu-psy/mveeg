@@ -68,6 +68,7 @@ def compare_pipeline(
     config = {
         "analysis_kind": "subspace_strength",
         "estimator_version": 2,
+        "minimum_noise_df": 3,
         "mveeg_version": _version(),
         "dataset": str(pipeline.dataset),
         "metadata_variables": list(pipeline._metadata_variables),

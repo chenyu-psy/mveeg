@@ -5,6 +5,8 @@
   estimation, full-channel correlation shrinkage, sample-rank diagnostics, and
   a separate documented DuckDB contract. Low complement noise df produces an
   explicit warning; covariance uncertainty is not treated as solved by shrinkage.
+  Complement noise df <= 2 is rejected; df 3/4 warns about Gaussian
+  inverse-variance moment divergence even with few channels.
   Existing ridge encoding and pattern expression are unchanged.
 
 # mveeg 0.3.2

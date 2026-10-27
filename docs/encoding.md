@@ -265,7 +265,7 @@ condition effect completely confounded with run; missing group-condition
 cells raise an error rather than being imputed.
 
 For each pair, all remaining groups supply a pooled within-condition residual
-noise estimate. At least two residual degrees of freedom are required. Neither
+noise estimate. At least three residual degrees of freedom are required. Neither
 evaluation group's EEG enters its precision estimate. Ledoit-Wolf shrinkage is
 applied to the **full retained-channel correlation matrix**, then transformed
 back to channel covariance/precision scale, with a residual-df scale correction.
@@ -290,6 +290,18 @@ Shrinkage fills unobserved covariance directions using assumptions. It cannot
 recover information absent from the experiment, guarantee population inverse
 covariance, or guarantee correct model rankings. Condition confounding,
 missing condition coverage and insufficient residual df still fail explicitly.
+
+There is also a Gaussian moment boundary even with one channel. For iid Gaussian
+errors with common channel covariance, after removing condition means,
+`SS_j / sigma_j^2` has a chi-squared distribution with residual
+`df = n - C`. Correlation shrinkage has unit diagonal, so the returned precision
+satisfies `Q_jj >= df / SS_j` (exactly equal for one channel). Its mean diverges
+at df <= 2; its second moment diverges at df <= 4. Comparison therefore rejects
+df <= 2 and warns for df 3/4 regardless of channel count. `minimum_noise_df=3`
+is saved in configuration, preventing reuse of results under the earlier
+acceptance policy without recomputation. These are Gaussian lower boundaries,
+not certification of reliability above df 4; non-Gaussian/dependent noise and
+matrix estimation can impose additional limitations.
 
 These are strengths under a complement-trained **regularized noise metric**.
 The independent-crossproduct null property holds conditional on that metric;
