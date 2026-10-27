@@ -41,6 +41,11 @@ as channels, time bins, predictors, and classifier geometry must match exactly
 between subjects in the same result file.
 
 See [Decoding](decoding.md) and [Encoding](encoding.md) for their full tables.
+Encoding can additionally save observed-code reference results and reference
+trial evidence through `encode(expression_reference=...)`. These additive tables
+retain raw scores and use distinct public trial counts; auxiliary reference
+projections are not independent trials. See the
+[reference contract](encoding.md#observed-code-expression-references).
 
 ## Channel coordinates
 
