@@ -30,6 +30,7 @@ pipeline.encode(
     target="condition",
     conditions=TRAINING_CONDITIONS,
     expression=EXPRESSION_CONDITIONS,
+    expression_reference={"color": 0},
     file="results/condition_variables.duckdb",
     recompute="never",
     n_jobs=5,
@@ -118,6 +119,161 @@ s = y' inv(Sigma) beta / sqrt(beta' inv(Sigma) beta)
 After held-out expression is complete, mveeg fits the same model once to all
 training trials. Only this full-data raw-scale beta is written to
 `coefficients`; fold betas remain internal.
+
+## Observed-code expression references
+
+`encode(expression_reference={"color": 0})` adds an observed reference for
+`color` within the encoding pipeline. The mapping is sparse: `number`, `load`,
+and any other unlisted components retain their current raw expression.
+Omitting the mapping or passing `{}` preserves the existing configuration,
+scores, tables, fold assignments and cached-result compatibility exactly.
+
+Reference settings sit beside `expression` because they describe this analysis's
+expression output. They do not change the fitted model or numeric coding.
+`expression` still maps display groups to raw `target` values;
+`expression_reference` maps **expanded numeric component names to observed
+numeric code values**, not to those display groups. For example,
+`{"color": 0, "number": -1}` configures two different references without
+requiring settings for every component. Nonzero and contrast-coded references
+are supported. There is no compulsory zero, centering rule, or reference parameter
+on `setup_model()`.
+
+Membership uses each selected trial's actual design value after metadata
+transformations and formula expansion. Thus a reference for `a:b` matches the
+actual product column; it is not a counterfactual intervention on `a` or `b`.
+Trial-varying numeric codes remain supported. Matching is exact numerical
+equality, without an implicit tolerance. If an expression such as `.3 - .2`
+does not exactly equal `.1`, define or round the code explicitly in
+`transform_metadata()` before fitting. Unknown components, nonnumeric/nonfinite
+references, and values not observed among eligible expression trials fail
+explicitly. No fitted, extrapolated or minimum-observed fallback is used.
+
+### Reference statistic and interpretation
+
+The encoder, precision and normalized matched filter are learned solely from
+the same training fold as before. Write the existing score as `s_raw`. For
+component `k` with reference code `r`, the pipeline calculates
+
+```text
+R_fk = {j: actual component code x_jk == r, and j was not used to train model f}
+offset_fk(t) = mean of s_raw_jk(t) over j in R_fk
+s_referenced_ik(t) = s_raw_ik(t) - offset_fk(t)
+```
+
+**Every eligible matching reference trial has equal weight `1 / len(R_fk)`.**
+Trials are pooled directly across raw conditions and expression groups. There
+is no averaging of condition means, condition balancing, or group-weight option.
+For example, if three matching trials in condition A have scores `[1,2,3]` and
+one in condition B has score `9`, the reference is `3.75`, not `5.5`. Regrouping
+the same eligible trials under different display labels does not change it.
+Changing which trials survive QC or changing their number can change this
+empirical trial-population reference, as intended.
+
+Negative, zero and positive mean below, equal to and above this observed
+reference projection. They do not mean absence/presence of a latent process,
+uniquely isolated components, or an EEG state predicted by setting a design
+variable to zero. No other-component predictions or condition dummy patterns
+are subtracted. The original training mean cancels algebraically from the
+referenced difference; it remains the coordinate of saved raw scores.
+
+One common offset is subtracted from all public scores of that component,
+fold and time. Differences **within the same fold** are unchanged. Across folds,
+filters and offsets differ; trial-weighted condition summaries can have different
+fold mixtures, so their aggregate differences are not promised unchanged.
+The operation supplies a meaningful empirical origin, not universal lower
+variance or independent single-trial evidence.
+
+### Held-out coverage and auxiliary reference evidence
+
+Training folds and public test rows are unchanged. A training-derived reference
+trial contributes only to its own held-out model. If a fold has no legal matching
+reference observations, that subject fails with component/code/fold context.
+Missing individual raw conditions do not matter while matching trials exist;
+there is no fixed condition-stratum population or per-condition coverage rule.
+The pipeline does not silently repartition training data, borrow fitted scores
+from another model, or renormalize a condition-weight scheme.
+
+Expression-only trials never enter any fold's training set. Matching reference
+trials of this kind may therefore supply **auxiliary** projections under each
+fold model, even when their ordinary public expression was assigned to another
+fold. This makes a sparse observed control usable without extra training splits
+or data leakage. It follows the eligibility principle used for nontraining
+classifier evidence in decoding, while retaining encoding's own estimator.
+
+Auxiliary projections live only in the reference evidence table. They do not
+duplicate public expression rows, increase trial counts, or change an unlisted
+component's outputs. Within a fold each reference epoch contributes once.
+A nonfinite reference projection (including an undefined near-null pattern)
+fails explicitly rather than dropping trials or folds.
+
+The pooled reference evidence has zero mean after subtracting its own offset.
+An arbitrary displayed group's mean need not be exactly zero: it may mix codes,
+contain only a subset of the reference population, or use different public
+fold assignments from auxiliary evidence. A sole reference observation can
+also center itself to zero by construction; that is not noiseless evidence.
+Shared reference trials induce dependence among scores and across folds.
+Use participants as inferential units, not reference prediction rows.
+
+### Native result tables and summaries
+
+The original `pattern_expression` and `condition_pattern_expression` remain
+unchanged. With a nonempty reference mapping, the pipeline additionally writes:
+
+- `referenced_pattern_expression(subject_index, epoch_index, time, component,
+  expression_group, raw_expression, reference_expression, expression, fold)`:
+  selected components only, with the same once-only public trial/fold rows;
+  `expression = raw_expression - reference_expression`.
+- `expression_references(subject_index, fold, component, time, reference_value,
+  reference_expression, n_trials)`: actual per-model offsets and reference counts.
+- `expression_reference_trials(subject_index, epoch_index, fold, component, time,
+  reference_value, weight, raw_expression, auxiliary)`: exact membership,
+  `weight=1/N`, projections and auxiliary flags. Join to `trials` for raw metadata.
+  Summing `weight * raw_expression` reproduces the offset.
+
+`condition_referenced_pattern_expression` reports participant/condition/component/
+time, **trial-weighted** `mean`, distinct `n_trials`, and observed `n_folds`.
+`fold_condition_referenced_pattern_expression` reports the corresponding fold
+means and distinct trial counts, so fold mixtures remain inspectable. Neither
+view provides a trial-based inferential SE; subtracting a shared reference
+does not preserve independent errors. The original raw summary view is retained
+with its existing descriptive fields; it is not a reference-aware uncertainty
+estimator.
+
+These are additive tables/views with explicit fixed columns, preserving result
+schema version 1's existing tables. The scientific extension is identified by
+`analysis.config.expression_reference` and `expression_reference_estimator`
+(version, exact matching, equal-trial weighting and summary conventions).
+An existing raw-only file cannot be silently reused for referenced results:
+use a different file or `recompute="all"`. Omitting the reference keeps the old
+fingerprint. Subject transactions, failure recording, resume and exclusions
+also cover the new tables; no fold checkpoint or separate result helper is added.
+
+### Paired validation against raw expression
+
+`tests/encoding/benchmark_expression_reference.py` is a fixed-seed synthetic
+comparison through the actual CV fitting path: 200 paired replicates at each
+of noise-only, weak (.25) and strong (1) signal levels, four folds, uneven
+condition counts `[7,11,8,5]`, expression-only counts `[1,3]`, correlated
+predictors and 12 correlated average-referenced channels. The same fitted
+models supply raw and referenced scores; there is no truth-based parameter
+tuning or extra half-training split.
+
+| Signal | Displayed zero-code A mean, raw / referenced | A SD, raw / referenced | D−A mean, raw / referenced |
+| --- | ---: | ---: | ---: |
+| Weak .25 | −.4594 / .0194 | .5502 / .5062 | .9466 / .9427 |
+| Strong 1 | −2.8842 / −.0042 | .5937 / .5938 | 6.3438 / 6.3126 |
+
+Here A and the expression-only reference observations have the same generative
+mean, so the approximately zero referenced A mean demonstrates the intended
+observed-reference origin in this case, not a guarantee for every zero-coded
+condition under other components or omitted effects. Noise-only D−A means
+were .0058 ± .0744 Monte Carlo SE raw and −.0011 ± .0738 referenced: there was
+no demonstrated new systematic gradient. Within-fold differences were
+preserved within `1.8e-15`; the pooled reference evidence centered itself
+within `1.1e-15`. Aggregate D−A can change because folds have unequal mixtures.
+These bounded results show useful origin calibration without the previous
+independent-half fitting variance cost. They do not establish universal
+variance improvement or neural-source identification.
 
 ## DuckDB tables
 
