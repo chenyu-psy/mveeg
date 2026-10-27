@@ -33,6 +33,7 @@ from ._prepare import (
     select_trials,
     validate_groups,
 )
+from ._reference import normalize_expression_reference
 from ._storage import (
     SUBJECT_TABLES,
     completed_subjects,
@@ -215,12 +216,21 @@ class EncodingPipeline:
         target: str,
         conditions: Mapping[str, Sequence[object]],
         expression: Mapping[str, Sequence[object]] | None = None,
+        expression_reference: Mapping[str, float] | None = None,
         file: str | Path,
         recompute: str = "never",
         n_jobs: int = 1,
         progress: bool = True,
     ) -> None:
-        """Fit encoding and write the documented DuckDB result tables."""
+        """Fit encoding and write the documented DuckDB result tables.
+
+        ``expression_reference`` sparsely maps expanded numeric component names
+        to actually observed codes. For each listed component, an additional
+        referenced result subtracts the pooled mean of equally weighted matching
+        trials held out from that fold's model. Raw outputs and unlisted
+        components stay unchanged. Reference values are matched exactly;
+        neither display groups nor theoretical predictions define membership.
+        """
 
         self._refresh_dataset()
         if not isinstance(formula, str) or formula.strip() == "":
@@ -236,6 +246,7 @@ class EncodingPipeline:
         model = dict(self._model)
         if model.get("method") == "orthogonal":
             model["weights"] = normalize_condition_weights(condition_map, model["weights"])
+        reference = normalize_expression_reference(expression_reference)
         path = result_path(file)
         existing = read_analysis(path)
         seed = self._cv["seed"]
@@ -255,6 +266,15 @@ class EncodingPipeline:
             "conditions": condition_map,
             "expression": expression_map,
         }
+        if reference:
+            config["expression_reference"] = reference
+            config["expression_reference_estimator"] = {
+                "version": 1,
+                "matching": "exact_expanded_numeric_code",
+                "weighting": "equal_eligible_matching_trials",
+                "auxiliary": "never_trained_reference_trials_under_each_fold_model",
+                "summary": "equal_trials_public_once_only_scores",
+            }
         analysis_fingerprint = settings_fingerprint(config)
         if (
             existing is not None
@@ -333,6 +353,7 @@ class EncodingPipeline:
                 seed=seed,
                 n_jobs=n_jobs,
                 progress=progress,
+                expression_reference=reference,
             )
 
         for subject in subjects:

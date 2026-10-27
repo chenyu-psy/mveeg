@@ -28,6 +28,10 @@
   not depend on code scale; its condition penalty only rescales residual
   condition patterns. Document estimator-specific penalty scales, identifiable
   condition codes, and paired synthetic accuracy tradeoffs.
+- Add sparse `encode(expression_reference={component: observed_numeric_code})`
+  for native held-out expression references. Matching trials are pooled with
+  equal trial weights. Raw results and unlisted components remain unchanged;
+  new referenced/evidence tables make offsets and membership auditable.
 
 # mveeg 0.4.0
 

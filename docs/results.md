@@ -43,6 +43,11 @@ trip, so dtype differences and float rounding are ignored. Channels are matched
 by name, so subjects may store them in a different order.
 
 See [Decoding](decoding.md) and [Encoding](encoding.md) for their full tables.
+Encoding can additionally save observed-code reference results and reference
+trial evidence through `encode(expression_reference=...)`. These additive tables
+retain raw scores and use distinct public trial counts; auxiliary reference
+projections are not independent trials. See the
+[reference contract](encoding.md#observed-code-expression-references).
 
 ## Channel coordinates
 
