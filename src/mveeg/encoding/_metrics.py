@@ -47,6 +47,39 @@ def fit_ridge(
     return betas.reshape(design.shape[1], data.shape[1], data.shape[2])
 
 
+def fit_orthogonal(
+    data: np.ndarray,
+    condition_indicators: np.ndarray,
+    theory: np.ndarray,
+    weights: np.ndarray,
+    component_penalty: float,
+    residual_penalty: float,
+) -> np.ndarray:
+    """Denoise condition means with residuals constrained orthogonal to theory.
+
+    The loss is weighted condition-mean squared error (weights sum to one),
+    plus ridge on theoretical components and weighted ridge on residual patterns.
+    The intercept belongs to the theory space and remains unpenalized.
+    """
+    counts = condition_indicators.sum(axis=0)
+    if np.any(counts == 0):
+        raise ValueError("Every training fold needs every condition for orthogonal encoding.")
+    means = condition_indicators.T @ data.reshape(len(data), -1) / counts[:, None]
+    root_weight = np.sqrt(weights)
+    weighted_theory = root_weight[:, None] * theory
+    weighted_means = root_weight[:, None] * means
+    # QR avoids subtracting two nearly equal normal-equation projections.
+    q, r = np.linalg.qr(weighted_theory, mode="reduced")
+    residual = (weighted_means - q @ (q.T @ weighted_means)) / root_weight[:, None]
+    penalties = np.full(theory.shape[1], component_penalty)
+    penalties[0] = 0
+    augmented = np.vstack([r, np.diag(np.sqrt(penalties))])
+    response = np.vstack([q.T @ weighted_means, np.zeros((theory.shape[1], means.shape[1]))])
+    beta = np.linalg.lstsq(augmented, response, rcond=None)[0]
+    residual /= 1.0 + residual_penalty
+    return np.concatenate([beta, residual]).reshape(-1, data.shape[1], data.shape[2])
+
+
 def estimate_channel_covariance(
     residuals: np.ndarray,
     *,
