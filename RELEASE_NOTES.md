@@ -1,3 +1,10 @@
+# Unreleased
+
+- Add `EncodingPipeline.compare()` for crossvalidated theoretical-subspace
+  strength, with paired nested/nonnested differences, independent-group noise
+  estimation, rank-aware shrinkage, and a separate documented DuckDB contract.
+  Existing ridge encoding and pattern expression are unchanged.
+
 # mveeg 0.3.2
 
 mveeg 0.3.2 fixes artifact-labeling persistence without changing the public API

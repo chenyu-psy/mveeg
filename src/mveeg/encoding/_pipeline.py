@@ -157,6 +157,43 @@ class EncodingPipeline:
         self._cv = {"folds": int(folds), "seed": None if seed is None else int(seed)}
         return self
 
+    def compare(
+        self,
+        *,
+        models: Mapping[str, str],
+        target: str,
+        conditions: Mapping[str, Sequence[object]],
+        file: str | Path,
+        groups: str | None = None,
+        nuisance: str | None = None,
+        weights: Mapping[str, float] | None = None,
+        recompute: str = "never",
+        progress: bool = True,
+    ) -> None:
+        """Compare fixed theoretical subspaces using independent condition patterns.
+
+        ``models`` maps names to numeric RHS formulas. ``groups`` names an
+        independent run/block metadata column; None assumes exchangeable trials
+        and uses setup_cv folds (at least three). Conditions must occur in every
+        group. ``nuisance`` adds condition-constant terms to the common intercept.
+        Weights are positive condition weights, normalized to sum to one.
+        Results are written to a separate DuckDB file; no expression is computed.
+        """
+        from ._comparison_pipeline import compare_pipeline
+
+        return compare_pipeline(
+            self,
+            models=models,
+            target=target,
+            conditions=conditions,
+            file=file,
+            groups=groups,
+            nuisance=nuisance,
+            weights=weights,
+            recompute=recompute,
+            progress=progress,
+        )
+
     def encode(
         self,
         *,

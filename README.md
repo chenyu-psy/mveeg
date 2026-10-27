@@ -16,6 +16,8 @@ parts your study needs.
 - Identify unusable trials with study-defined checks, AutoReject, and manual
   review.
 - Run multivariate decoding, temporal generalization, or linear encoding.
+- Compare theoretical condition subspaces using independently estimated,
+  noise-normalized signal strength ([comparison contract](docs/encoding.md#crossvalidated-theoretical-subspace-strength)).
 - Keep trial IDs, metadata, and processing settings together from preparation
   to results.
 
