@@ -41,6 +41,9 @@ as channels, time bins, predictors, and classifier geometry must match exactly
 between subjects in the same result file.
 
 See [Decoding](decoding.md) and [Encoding](encoding.md) for their full tables.
+Encoding's separate `compare()` files use the same state/transaction layout,
+with `analysis.config.analysis_kind="subspace_strength"` and their own
+[comparison tables](encoding.md#comparison-result-contract).
 
 ## Channel coordinates
 

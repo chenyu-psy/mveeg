@@ -161,8 +161,8 @@ replaces the analysis.
 Each subject is committed transactionally. A failure records its reason in
 `subjects` without partial result rows, then raises immediately with the
 subject identifier; later subjects are not attempted. A later call reuses
-completed subjects and retries failed and not-yet-attempted subjects. Model
-comparison, time smoothing, Bayesian estimation, and cross-subject
+completed subjects and retries failed and not-yet-attempted subjects. Time
+smoothing, Bayesian estimation, and cross-subject
 hierarchical models are outside the 0.3 contract.
 
 Common transaction, version, fixed-column, and unitless channel-coordinate
@@ -178,3 +178,214 @@ no additional analysis configuration is needed. Excluded subjects remain in
 are retained with `recompute="never"` and deleted with `"changed"` or `"all"`.
 See [the review workflow](quality.md#subject-selection-after-review) and
 [the result contract](results.md#dataset-level-subject-exclusions).
+
+## Crossvalidated theoretical-subspace strength
+
+`compare()` is an independent analysis on the same prepared dataset. It uses
+the metadata transformations, QC selection, and epoch preparation above, but
+does not use `setup_model()`, ridge coefficients, expression groups, or pattern
+expression. Write comparison results to a separate DuckDB file.
+
+```python
+pipeline.setup_cv(folds=5, seed=42)
+pipeline.compare(
+    models={
+        "color": "color",
+        "color_and_number": "color + number",
+        "load": "load",
+    },
+    target="condition",
+    conditions=TRAINING_CONDITIONS,
+    groups="run",  # independently acquired runs/blocks, not arbitrary trial bins
+    nuisance=None,  # intercept is always removed; optional common numeric RHS terms
+    weights=None,   # equal condition weights; or a positive mapping with these keys
+    file="results/subspace_strength.duckdb",
+    recompute="never",
+    progress=True,
+)
+```
+
+Model names define the order of paired comparisons: `delta_strength` is the
+second model's strength minus the first model's strength. Numeric formula
+syntax matches `encode()`, with `"1"` additionally allowed as a zero-rank null
+model. Predictors and common nuisance terms must be constant within each
+training condition. Grouping multiple raw conditions with different codes is
+rejected rather than averaged silently. Correlated or aliased model columns
+are allowed: only their joint span is scored, not individual coefficient energy.
+No observed all-zero condition, full factorial, or orthogonal component codes
+are required.
+
+### Estimator and meaning
+
+Let `U_r` contain unbiased raw condition means from independent group `r`, and
+let `W` be the fixed diagonal condition weights normalized to sum to one. With
+common nuisance design `N` (including the intercept), define
+
+```text
+A = (I - P[sqrt(W) N]) sqrt(W)
+Z_r = A U_r
+B_M = A X_M
+P_M = orthogonal projector onto col(B_M)
+S_rs(M) = trace(Z_r' P_M Z_s Q_{-rs})
+S(M) = mean over unordered pairs r < s of S_rs(M)
+```
+
+`P[...]` denotes a joint Euclidean projector. There is no divisor by model
+rank or sum of separate component energies. Negative finite-sample strengths
+and increments are retained. All models share weights, nuisance removal,
+evaluation groups, channel support, and precision within each pair/time bin.
+
+For nested spaces, `P_2 - P_1` projects onto the additional directions, so the
+expected paired difference measures signal energy in those directions. Null
+additional directions have zero expected increment **conditional on the
+complement-trained metric**, assuming zero cross-group error covariance and
+fixed theory/nuisance coding. Low SNR increases uncertainty; the estimator
+does not impose positive estimates. Estimated shrinkage precision is not an
+exactly unbiased estimator of population inverse noise covariance; the null
+crossproduct property does not make its absolute scale population-unbiased.
+
+For nonnested spaces, the difference compares captured signal energy; it is
+not a unique added-component effect. Same-span theories necessarily tie.
+Larger spaces can capture genuine signal outside a favored theory: absence of
+null dimension bias is not general complexity-neutral theory selection.
+Do not select models, weights, or nuisance terms on these same evaluation
+estimates and then claim the fixed-model null expectation.
+
+### EEG noise, rank, and independent groups
+
+Every evaluation group must contain every requested condition, with at least
+three groups overall. Unequal trial counts are allowed; condition means remain
+unbiased, and fixed weights determine the scientific condition population.
+The estimator does not weight a condition or pair by observed EEG strength.
+With `groups=None`, shuffled stratified trial folds from `setup_cv()` are used;
+this explicitly assumes exchangeable, independent trial errors across folds.
+If temporally blocked trials share drift or condition-dependent run artifacts,
+use an independent run/block column. Crossvalidation cannot distinguish a
+condition effect completely confounded with run; missing group-condition
+cells raise an error rather than being imputed.
+
+For each pair, all remaining groups supply a pooled within-condition residual
+noise estimate. At least three residual degrees of freedom are required. Neither
+evaluation group's EEG enters its precision estimate. Ledoit-Wolf shrinkage is
+applied to the **full retained-channel correlation matrix**, then transformed
+back to channel covariance/precision scale, with a residual-df scale correction.
+This preserves channel variance differences while shrinking correlations.
+Flat retained channels with no complement noise variance raise an error.
+
+Empirical sample rank is a diagnostic, **not** an estimate of structural channel
+support. The estimator never deletes directions merely because complement
+samples do not span them: those directions may contain genuine held-out signal.
+Average reference/interpolation can also cause rank loss, but their exact
+structural transform is not inferred from a small residual sample. The metric
+is defined in the fixed retained sensor representation; regularization can
+assign variance to a structural-null direction, which contributes no signal
+when all evaluated data obey the same transform. Changing or duplicating
+sensor representations is not claimed to leave the regularized metric unchanged.
+
+When complement residual df is below the retained channel count, one warning
+per subject states that noise information **may be sample-limited**. Saved
+`noise_df`, empirical `channel_rank`, shrinkage, and covariance conditioning
+expose the problem; exceeding the channel count is not a reliability guarantee.
+Shrinkage fills unobserved covariance directions using assumptions. It cannot
+recover information absent from the experiment, guarantee population inverse
+covariance, or guarantee correct model rankings. Condition confounding,
+missing condition coverage and insufficient residual df still fail explicitly.
+
+There is also a Gaussian moment boundary even with one channel. For iid Gaussian
+errors with common channel covariance, after removing condition means,
+`SS_j / sigma_j^2` has a chi-squared distribution with residual
+`df = n - C`. Correlation shrinkage has unit diagonal, so the returned precision
+satisfies `Q_jj >= df / SS_j` (exactly equal for one channel). Its mean diverges
+at df <= 2; its second moment diverges at df <= 4. Comparison therefore rejects
+df <= 2 and warns for df 3/4 regardless of channel count. `minimum_noise_df=3`
+is saved in configuration, preventing reuse of results under the earlier
+acceptance policy without recomputation. These are Gaussian lower boundaries,
+not certification of reliability above df 4; non-Gaussian/dependent noise and
+matrix estimation can impose additional limitations.
+
+These are strengths under a complement-trained **regularized noise metric**.
+The independent-crossproduct null property holds conditional on that metric;
+it does not establish unbiased population-Mahalanobis amplitudes or reliable
+nonnested theory rankings under weak covariance estimation. The df correction
+adjusts covariance scale, not all finite-sample inverse-covariance bias.
+
+No additional dataset is needed. Five groups require ten pair-specific noise
+fits per time bin, each from three groups. Subjects and pairs execute serially.
+Nearby time bins and overlapping group pairs are dependent; use participants
+as inferential units, not pair products or time bins as independent replicates.
+The package does not compute group inference or pair-based standard errors.
+
+### Comparison result contract
+
+The separate file uses the common `analysis` and `subjects` state layout,
+schema version 1, and `analysis.config.analysis_kind="subspace_strength"`.
+Estimator version 2 records full-channel correlation shrinkage. Results from
+the sample-support prototype cannot be resumed as equivalent: use a new file
+or `recompute="all"` to replace them.
+Configuration records ordered model names/formulas, common nuisance, normalized
+weights, group column, seed, preparation, and estimator/precision conventions.
+`recompute`, input fingerprints, exclusions, and transactional failure behavior
+match `encode()`. An existing encoding result cannot be reused as a comparison file.
+
+Saved tables:
+
+- `trials`, `channels`, `time_bins`: the selected metadata and prepared EEG geometry.
+- `trial_groups(subject_index, epoch_index, condition, group_label)`:
+  actual evaluation assignments, including randomly generated partitions.
+- `model_designs(subject_index, model, condition, term, value, weight)`:
+  the numeric theoretical coding used for each subject.
+- `pair_strengths(subject_index, group_a, group_b, time, model, strength)`:
+  paired estimates retained for checking, not independent inferential samples.
+- `strengths(subject_index, time, model, strength, model_rank)`:
+  one pair-averaged estimate per participant/model/time bin.
+- `comparisons(subject_index, time, model_1, model_2, delta_strength, nested, same_span)`:
+  `nested` means model 1's space is contained in model 2's space.
+- `covariance_diagnostics(subject_index, group_a, group_b, time, n_noise_trials,
+  noise_df, channel_rank, n_channels, shrinkage, condition_number)`.
+  `channel_rank` is empirical complement residual rank, not metric support rank.
+
+### Paired covariance stress test
+
+`tests/encoding/benchmark_strength.py` provides a fixed-seed paired comparison
+of the rejected sample-support prototype, full-channel raw covariance shrinkage,
+the selected full-channel correlation shrinkage, and a simple diagonal metric.
+It uses seed 271033, 200 replicates, 32 channels, complement residual df
+8/32/128, independent evaluation condition means with unequal counts `[4,8,5,7]`,
+and isotropic, AR(.8) correlated, spiked-spectrum, and average-reference rank-loss
+noise. Theory/nuisance geometry and all noise samples are identical between
+methods; population targets are diagnostics, never used to tune the method.
+
+For spiked diagonal covariance (eight variances 100, twenty-four variances 1),
+two signal energies have population targets .25 and 1. At df 8, prototype
+metric energies average .216/.001, selected correlation-shrinkage energies
+.447/1.823, and raw covariance shrinkage energies .964/.108. Correct
+nonnested-ranking fractions are respectively 19.5%, 84.5%, and 25.5%.
+At df 128 these fractions are 57%, 90%, and 57%. Preserving channel variances
+avoids the raw-shrinkage ranking distortion in this particular diagonal case;
+it does not make the noisy inverse metric exact. The diagonal control also
+performs well here and poorly with strongly correlated noise.
+
+The harder AR(.8) case remains a failure of oracle ranking at low df:
+population targets 3.109/8.979 become 24.337/3.184 under the selected metric at
+df 8, with 0% correct ranking. At df 128 they become 4.203/6.232, with 95%
+correct ranking. No numerical regularizer fixes missing covariance information.
+The rank-loss case similarly reaches 86.5% correct ranking at df 128, not 100%.
+Across the twelve selected-metric scenario/df combinations, null increment
+means are within 2.17 Monte Carlo standard errors of zero. In the spiked df-8
+case, a genuine added direction yields a positive increment in 95.5% of
+replicates versus 48.5% under the prototype. These are descriptive fractions,
+not significance-test power or independent participant-level evidence.
+
+The repair eliminates artificial annihilation of sample-null signal, with an
+explicit low-information warning. It does **not** claim uniformly lower oracle
+energy error: low-df amplitudes can be biased and variable (isotropic unit-energy
+direction: mean 1.760, SD .969 at df 8). No model-selection conclusion should
+hide that uncertainty. Current `develop` has no corresponding subspace-energy
+comparison API; its component expression is a different estimand and is not a
+valid oracle-strength comparator.
+
+The estimator follows crossvalidated pattern-energy reasoning; see
+[Allefeld and Haynes (2014)](https://arxiv.org/abs/1401.4122) and
+[Diedrichsen and Kriegeskorte (2017)](https://doi.org/10.1371/journal.pcbi.1005508).
+Its weighted projector and complement-trained shrinkage metric are specified
+above rather than claiming identity to every published estimator.
