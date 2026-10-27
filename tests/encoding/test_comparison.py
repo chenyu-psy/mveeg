@@ -111,7 +111,9 @@ def test_reference_and_interpolation_rank_loss():
     precision, rank, _, _ = noise_precision(residuals)
     assert rank == 11
     assert np.isfinite(precision).all()
-    np.testing.assert_allclose(precision @ np.ones(12), 0, atol=0.01)
+    assert np.linalg.eigvalsh(precision).min() > 0
+    # Sample rank diagnoses reference/interpolation loss but does not define the
+    # metric support: shrinkage operates in retained-channel coordinates.
     duplicate = np.column_stack([residuals, residuals[:, 0]])
     _, rank, _, _ = noise_precision(duplicate)
     assert rank == 11
@@ -157,6 +159,51 @@ def test_under_sampled_channel_support_remains_finite():
     assert np.isfinite(precision).all() and np.isfinite(condition_number)
 
 
+def test_sample_null_direction_retains_finite_signal_energy():
+    residuals = np.random.default_rng(12).normal(size=(9, 64))
+    centered = residuals - residuals.mean(axis=0)
+    _, singular, vt = np.linalg.svd(centered, full_matrices=True)
+    pattern = vt[len(singular)]
+    precision, rank, _, _ = noise_precision(residuals)
+    assert rank == 8
+    assert pattern @ precision @ pattern > 0.1
+    np.testing.assert_allclose(centered @ pattern, 0, atol=1e-12)
+
+
+def test_noise_metric_preserves_channel_scale_and_rejects_flat_noise():
+    noise = np.random.default_rng(13).normal(size=(20, 8))
+    scales = np.array([10.0, 1, 3, 0.5, 2, 0.2, 1, 4])
+    first, _, _, _ = noise_precision(noise)
+    second, _, _, _ = noise_precision(noise * scales)
+    np.testing.assert_allclose(
+        second, first / scales[:, None] / scales[None, :], rtol=1e-10, atol=1e-12
+    )
+    noise[:, 0] = 0
+    with pytest.raises(ValueError, match="flat channels"):
+        noise_precision(noise)
+
+
+def test_complement_df_warning_and_no_noise_information_failure():
+    _, metadata, labels, groups = _arrays()
+    data = np.random.default_rng(19).normal(size=(len(labels), 64, 2))
+    with pytest.warns(RuntimeWarning, match="may be sample-limited") as recorded:
+        result = _compare(data, metadata, labels, groups)
+    assert len(recorded) == 1
+    assert result["covariance_diagnostics"].noise_df.max() < 64
+    assert np.isfinite(result["strengths"].strength).all()
+    # Three complete groups with one trial per condition leave zero residual df
+    # after holding two groups out. Shrinkage cannot manufacture repetitions.
+    selected = np.concatenate(
+        [
+            np.flatnonzero((groups == group) & (labels == condition))[:1]
+            for group in range(3)
+            for condition in ["A", "B", "AB", "other"]
+        ]
+    )
+    with pytest.raises(ValueError, match="noise degrees of freedom"):
+        _compare(data[selected], metadata.iloc[selected], labels[selected], groups[selected])
+
+
 def test_sparse_confounded_and_trial_varying_designs_rejected():
     data, metadata, labels, groups = _arrays()
     with pytest.raises(ValueError, match="at least three"):
@@ -192,6 +239,8 @@ def test_comparison_store_paired_metadata_resume_and_config(tmp_path):
         expected = connection.execute("SELECT * FROM comparisons ORDER BY time").fetchdf()
         config = json.loads(connection.execute("SELECT config FROM analysis").fetchone()[0])
         assert config["analysis_kind"] == "subspace_strength"
+        assert config["estimator_version"] == 2
+        assert config["precision"] == "leave_two_groups_out_full_channel_correlation_shrinkage"
         assert config["weights"] == {"A": 1 / 3, "AB": 1 / 3, "B": 1 / 3}
         assert connection.execute("SELECT COUNT(*) FROM trial_groups").fetchone()[0] == 18
         assert (

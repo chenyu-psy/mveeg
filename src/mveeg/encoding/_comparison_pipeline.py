@@ -67,7 +67,7 @@ def compare_pipeline(
         seed = int(existing["seed"]) if existing is not None else secrets.randbelow(2**63 - 1)
     config = {
         "analysis_kind": "subspace_strength",
-        "estimator_version": 1,
+        "estimator_version": 2,
         "mveeg_version": _version(),
         "dataset": str(pipeline.dataset),
         "metadata_variables": list(pipeline._metadata_variables),
@@ -81,7 +81,7 @@ def compare_pipeline(
         "weights": normalized_weights,
         "groups": groups,
         "cv": {"folds": pipeline._cv["folds"], "seed": seed},
-        "precision": "leave_two_groups_out_shrinkage_in_noise_support",
+        "precision": "leave_two_groups_out_full_channel_correlation_shrinkage",
         "normalization": "condition_weights_sum_one_no_rank_divisor",
     }
     analysis_fingerprint = fingerprint(config)

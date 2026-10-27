@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from itertools import combinations
 
@@ -127,21 +128,38 @@ def partition_trials(labels, *, groups, folds, seed):
 
 
 def noise_precision(residuals, noise_df=None):
-    """Shrink in the complement-data channel support; never inspect evaluation EEG."""
+    """Shrink full retained-channel covariance without deleting sample-null directions.
+
+    The sample rank is a diagnostic, not an estimate of physical channel support.
+    No evaluation EEG enters either the covariance or its regularization.
+    """
     centered = residuals - residuals.mean(axis=0, keepdims=True)
-    basis = _basis(centered.T)
-    if not basis.shape[1]:
+    rank = _basis(centered.T).shape[1]
+    if not rank:
         raise ValueError("No estimable channel noise directions in the remaining groups.")
-    # Raw support-scale shrinkage stabilizes eigenvalues; correlation shrinkage
-    # after PCA would see an identity correlation matrix and do no such work.
-    estimate = LedoitWolf(assume_centered=True).fit(centered @ basis)
+    scales = np.sqrt(np.mean(centered**2, axis=0))
+    if np.any(scales == 0):
+        raise ValueError(
+            "A retained channel has no complement noise variance; drop flat channels "
+            "before estimating comparison precision."
+        )
+    # Shrink correlations, preserving channel variance differences instead of
+    # pulling high- and low-variance EEG sensors toward a common variance.
+    estimate = LedoitWolf(assume_centered=True).fit(centered / scales)
+    if estimate.shrinkage_ == 0 and rank < centered.shape[1]:
+        raise ValueError(
+            "The complement covariance is rank deficient without positive shrinkage; "
+            "its unsampled channel variance cannot be estimated."
+        )
     degrees = len(centered) - 1 if noise_df is None else noise_df
-    precision = basis @ estimate.precision_ @ basis.T * (degrees / len(centered))
+    precision = estimate.precision_ / scales[:, None] / scales[None, :]
+    precision *= degrees / len(centered)
+    covariance = scales[:, None] * estimate.covariance_ * scales[None, :]
     return (
         precision,
-        basis.shape[1],
+        rank,
         float(estimate.shrinkage_),
-        float(np.linalg.cond(estimate.covariance_)),
+        float(np.linalg.cond(covariance)),
     )
 
 
@@ -223,6 +241,18 @@ def compare_subject(
                     "condition_number": condition_number,
                 }
             )
+    diagnostics = pd.DataFrame(diagnostics)
+    if diagnostics.noise_df.min() < data.shape[1]:
+        warnings.warn(
+            f"Subject {subject}: complement noise df range "
+            f"{diagnostics.noise_df.min()}..{diagnostics.noise_df.max()} is below "
+            f"{data.shape[1]} retained channels for at least one pair, so noise "
+            "information may be sample-limited. Full-channel shrinkage fills "
+            "sample-null directions; population precision and model "
+            "rankings may remain uncertain. Inspect covariance_diagnostics.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     pairs = pd.DataFrame(pairs)
     strengths = pairs.groupby(["time", "model"], sort=False)["strength"].mean().reset_index()
     strengths["model_rank"] = strengths["model"].map(
@@ -253,7 +283,7 @@ def compare_subject(
         "pair_strengths": pairs,
         "strengths": strengths,
         "comparisons": pd.DataFrame(comparisons),
-        "covariance_diagnostics": pd.DataFrame(diagnostics),
+        "covariance_diagnostics": diagnostics,
     }
     for frame in tables.values():
         frame.insert(0, "subject_index", subject)

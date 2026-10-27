@@ -2,7 +2,9 @@
 
 - Add `EncodingPipeline.compare()` for crossvalidated theoretical-subspace
   strength, with paired nested/nonnested differences, independent-group noise
-  estimation, rank-aware shrinkage, and a separate documented DuckDB contract.
+  estimation, full-channel correlation shrinkage, sample-rank diagnostics, and
+  a separate documented DuckDB contract. Low complement noise df produces an
+  explicit warning; covariance uncertainty is not treated as solved by shrinkage.
   Existing ridge encoding and pattern expression are unchanged.
 
 # mveeg 0.3.2

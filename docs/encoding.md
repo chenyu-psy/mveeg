@@ -266,16 +266,36 @@ cells raise an error rather than being imputed.
 
 For each pair, all remaining groups supply a pooled within-condition residual
 noise estimate. At least two residual degrees of freedom are required. Neither
-evaluation group's EEG enters its precision estimate. Numerical channel
-support is determined by SVD of the complement residuals, accommodating
-average-reference/interpolation rank loss. Ledoit-Wolf eigenvalue shrinkage
-is applied within that support; covariance scale is corrected by residual
-degrees of freedom. Precision is zero outside the estimated support.
-This is a complement-trained noise metric: when trials are fewer than channels,
-the support is also sample-limited and can vary across pairs, reducing power
-and changing the effective metric. Saved rank, trial-count, shrinkage, and
-conditioning diagnostics expose this limitation; shrinkage cannot restore
-unobserved independent channels.
+evaluation group's EEG enters its precision estimate. Ledoit-Wolf shrinkage is
+applied to the **full retained-channel correlation matrix**, then transformed
+back to channel covariance/precision scale, with a residual-df scale correction.
+This preserves channel variance differences while shrinking correlations.
+Flat retained channels with no complement noise variance raise an error.
+
+Empirical sample rank is a diagnostic, **not** an estimate of structural channel
+support. The estimator never deletes directions merely because complement
+samples do not span them: those directions may contain genuine held-out signal.
+Average reference/interpolation can also cause rank loss, but their exact
+structural transform is not inferred from a small residual sample. The metric
+is defined in the fixed retained sensor representation; regularization can
+assign variance to a structural-null direction, which contributes no signal
+when all evaluated data obey the same transform. Changing or duplicating
+sensor representations is not claimed to leave the regularized metric unchanged.
+
+When complement residual df is below the retained channel count, one warning
+per subject states that noise information **may be sample-limited**. Saved
+`noise_df`, empirical `channel_rank`, shrinkage, and covariance conditioning
+expose the problem; exceeding the channel count is not a reliability guarantee.
+Shrinkage fills unobserved covariance directions using assumptions. It cannot
+recover information absent from the experiment, guarantee population inverse
+covariance, or guarantee correct model rankings. Condition confounding,
+missing condition coverage and insufficient residual df still fail explicitly.
+
+These are strengths under a complement-trained **regularized noise metric**.
+The independent-crossproduct null property holds conditional on that metric;
+it does not establish unbiased population-Mahalanobis amplitudes or reliable
+nonnested theory rankings under weak covariance estimation. The df correction
+adjusts covariance scale, not all finite-sample inverse-covariance bias.
 
 No additional dataset is needed. Five groups require ten pair-specific noise
 fits per time bin, each from three groups. Subjects and pairs execute serially.
@@ -287,6 +307,9 @@ The package does not compute group inference or pair-based standard errors.
 
 The separate file uses the common `analysis` and `subjects` state layout,
 schema version 1, and `analysis.config.analysis_kind="subspace_strength"`.
+Estimator version 2 records full-channel correlation shrinkage. Results from
+the sample-support prototype cannot be resumed as equivalent: use a new file
+or `recompute="all"` to replace them.
 Configuration records ordered model names/formulas, common nuisance, normalized
 weights, group column, seed, preparation, and estimator/precision conventions.
 `recompute`, input fingerprints, exclusions, and transactional failure behavior
@@ -307,6 +330,47 @@ Saved tables:
   `nested` means model 1's space is contained in model 2's space.
 - `covariance_diagnostics(subject_index, group_a, group_b, time, n_noise_trials,
   noise_df, channel_rank, n_channels, shrinkage, condition_number)`.
+  `channel_rank` is empirical complement residual rank, not metric support rank.
+
+### Paired covariance stress test
+
+`tests/encoding/benchmark_strength.py` provides a fixed-seed paired comparison
+of the rejected sample-support prototype, full-channel raw covariance shrinkage,
+the selected full-channel correlation shrinkage, and a simple diagonal metric.
+It uses seed 271033, 200 replicates, 32 channels, complement residual df
+8/32/128, independent evaluation condition means with unequal counts `[4,8,5,7]`,
+and isotropic, AR(.8) correlated, spiked-spectrum, and average-reference rank-loss
+noise. Theory/nuisance geometry and all noise samples are identical between
+methods; population targets are diagnostics, never used to tune the method.
+
+For spiked diagonal covariance (eight variances 100, twenty-four variances 1),
+two signal energies have population targets .25 and 1. At df 8, prototype
+metric energies average .216/.001, selected correlation-shrinkage energies
+.447/1.823, and raw covariance shrinkage energies .964/.108. Correct
+nonnested-ranking fractions are respectively 19.5%, 84.5%, and 25.5%.
+At df 128 these fractions are 57%, 90%, and 57%. Preserving channel variances
+avoids the raw-shrinkage ranking distortion in this particular diagonal case;
+it does not make the noisy inverse metric exact. The diagonal control also
+performs well here and poorly with strongly correlated noise.
+
+The harder AR(.8) case remains a failure of oracle ranking at low df:
+population targets 3.109/8.979 become 24.337/3.184 under the selected metric at
+df 8, with 0% correct ranking. At df 128 they become 4.203/6.232, with 95%
+correct ranking. No numerical regularizer fixes missing covariance information.
+The rank-loss case similarly reaches 86.5% correct ranking at df 128, not 100%.
+Across the twelve selected-metric scenario/df combinations, null increment
+means are within 2.17 Monte Carlo standard errors of zero. In the spiked df-8
+case, a genuine added direction yields a positive increment in 95.5% of
+replicates versus 48.5% under the prototype. These are descriptive fractions,
+not significance-test power or independent participant-level evidence.
+
+The repair eliminates artificial annihilation of sample-null signal, with an
+explicit low-information warning. It does **not** claim uniformly lower oracle
+energy error: low-df amplitudes can be biased and variable (isotropic unit-energy
+direction: mean 1.760, SD .969 at df 8). No model-selection conclusion should
+hide that uncertainty. Current `develop` has no corresponding subspace-energy
+comparison API; its component expression is a different estimand and is not a
+valid oracle-strength comparator.
 
 The estimator follows crossvalidated pattern-energy reasoning; see
 [Allefeld and Haynes (2014)](https://arxiv.org/abs/1401.4122) and
