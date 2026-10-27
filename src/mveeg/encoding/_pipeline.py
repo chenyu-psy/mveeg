@@ -24,7 +24,12 @@ from .._dataset.selection import read_subject_selection
 from .._provenance import fingerprint, fingerprint_files
 from .._results.store import delete_subject
 from ._analysis import SubjectEncoding, encode_subject
-from ._prepare import DEFAULT_DROP_TYPES, select_trials, validate_groups
+from ._prepare import (
+    DEFAULT_DROP_TYPES,
+    normalize_condition_weights,
+    select_trials,
+    validate_groups,
+)
 from ._storage import (
     SUBJECT_TABLES,
     completed_subjects,
@@ -127,9 +132,21 @@ class EncodingPipeline:
         self,
         *,
         penalty: Mapping[str, float] | None = None,
+        method: str = "ridge",
+        weights: Mapping[str, float] | None = None,
     ) -> EncodingPipeline:
-        """Configure component and condition ridge penalties."""
+        """Choose overlapping ridge or denoised orthogonal condition decomposition.
 
+        Orthogonal mode requires condition-constant, identifiable theoretical
+        codes. Its weights define the condition population, with equal weights
+        by default. Penalties apply to a weighted mean loss, unlike ridge's
+        trial-level sum loss; their numerical scales are not interchangeable.
+        """
+
+        if method not in {"ridge", "orthogonal"}:
+            raise ValueError("method must be 'ridge' or 'orthogonal'.")
+        if method == "ridge" and weights is not None:
+            raise ValueError("Condition weights apply only to method='orthogonal'.")
         values = {"component": 1.0, "condition": 0.1} if penalty is None else dict(penalty)
         if set(values) != {"component", "condition"}:
             raise ValueError("penalty must contain exactly 'component' and 'condition'.")
@@ -140,6 +157,8 @@ class EncodingPipeline:
         if any(not np.isfinite(value) or value <= 0 for value in values.values()):
             raise ValueError("component and condition penalties must be finite positive values.")
         self._model = {"penalty": values}
+        if method == "orthogonal":
+            self._model.update(method=method, weights=None if weights is None else dict(weights))
         return self
 
     def setup_cv(
@@ -184,6 +203,9 @@ class EncodingPipeline:
             raise TypeError("progress must be bool.")
 
         condition_map, expression_map = validate_groups(conditions, expression)
+        model = dict(self._model)
+        if model.get("method") == "orthogonal":
+            model["weights"] = normalize_condition_weights(condition_map, model["weights"])
         path = result_path(file)
         existing = read_analysis(path)
         seed = self._cv["seed"]
@@ -196,7 +218,7 @@ class EncodingPipeline:
             "metadata_variables": list(self._metadata_variables),
             "trial_selection": self._trial_selection,
             "epoch_preparation": self._epoch_preparation,
-            "model": self._model,
+            "model": model,
             "cv": {**self._cv, "seed": seed},
             "formula": formula,
             "target": target,
@@ -267,6 +289,8 @@ class EncodingPipeline:
                 condition_order=list(condition_map),
                 formula=formula,
                 penalty=self._model["penalty"],
+                method=model.get("method", "ridge"),
+                weights=model.get("weights"),
                 folds=self._cv["folds"],
                 seed=seed,
                 n_jobs=n_jobs,

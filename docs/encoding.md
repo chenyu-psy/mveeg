@@ -92,6 +92,128 @@ Exact dependency among the theoretical component columns is handled by the
 same positive ridge penalties. Component and full-model rank deficiency remain
 visible in `design_diagnostics` rather than blocking estimation.
 
+### Denoised orthogonal condition decomposition
+
+To estimate a condition-space decomposition without competing theoretical and
+full-condition columns, choose an explicit alternative method:
+
+```python
+pipeline.setup_model(
+    method="orthogonal",
+    penalty={"component": 1.0, "condition": 0.1},
+    weights=None,  # equal condition weights; or positive weights for all condition keys
+)
+```
+
+The default remains `method="ridge"` with the existing trial-level estimator.
+This preserves its ability to model trial-varying predictors. `weights` is
+specific to the orthogonal method and is normalized to sum to one, then saved
+in `analysis.config.model` with the method and penalties. Orthogonal codes must
+be constant within every training condition; pooling different predictor codes
+under one condition key raises an error instead of silently averaging them.
+
+Let `U` contain training condition means, `A=[1, X]` the condition-level theory
+design, and `W` the fixed positive diagonal condition weights. The estimator is
+
+```text
+minimize ||sqrt(W) (U - A Theta - R)||_F^2
+         + lambda_component ||Theta_components||_F^2
+         + lambda_condition ||sqrt(W) R||_F^2
+subject to A' W R = 0
+```
+
+The intercept is included in `A` and unpenalized. Theoretical components can be
+correlated: they are not sequentially orthogonalized. With the weighted theory
+projector `P_A`, the solution has independent parts:
+
+```text
+Theta = weighted ridge fit of U to A
+R = (I - P_A) U / (1 + lambda_condition)
+M = A Theta + R
+```
+
+QR projection and an augmented least-squares solve avoid unnecessary normal
+equations. Residual patterns are orthogonal to the full theoretical space,
+including intercept. Their penalty cannot change theoretical coefficients;
+the theoretical penalty still changes their amplitudes. `M` is a denoised
+estimate, not an exact decomposition of observed condition means. Because this
+loss averages over conditions with total weight one, its penalty magnitudes
+are **not interchangeable** with the trial-sum ridge penalties. No automatic
+truth-based or held-out-expression-based penalty tuning is performed.
+
+The theory design must have full column rank including intercept to report
+identified individual components. Exact aliases raise a targeted error;
+near-collinear full-rank codes remain supported with regularization and a
+`weighted_theory_condition_number` diagnostic. Regularization improves
+stability but cannot create independently identified effects from a redundant
+experimental design. No observed zero condition or complete factorial is
+required. For A/B/AB conditions, intercept+a+b can be full rank and leave
+exactly zero residual condition space; adding an unidentifiable interaction
+does not create new information.
+
+Unequal trial counts affect precision of the condition means, not their fixed
+scientific weighting. Equal weights define an equal-condition population;
+custom positive weights define another stated population. The same weights
+apply to every fold and subject. Each training fold must contain every condition.
+
+The result tables and `predictors.role` values are unchanged. In this mode,
+`condition[...]` coefficients are constrained residual **condition patterns**,
+not coefficients from the overlapping ridge solve or an arbitrary residual
+basis. Their weighted orthogonality can be checked from saved condition codes
+in `trials` and weights in configuration. Model-rank diagnostics use the effective
+condition-space design. Full-data coefficients and fold-only covariance/
+expression follow the existing lifecycle. Expression-only conditions are
+allowed, and expression still uses the existing training-mean reference:
+this change does not include the separately evaluated expression redesign.
+
+The method is an allocation convention, not proof of distinct neural sources.
+If a generative omitted effect overlaps the theoretical condition space, that
+overlap is assigned to theory by definition. Neither method can identify the
+original latent attribution from these data alone. Low trial counts and low
+SNR remain sources of variance; strongly shrinking theory can increase bias.
+
+### Paired comparison with current ridge
+
+The reproducible synthetic comparison is
+`tests/encoding/benchmark_orthogonal.py`. It uses seed 271032, 100 replicates
+per scenario, six incomplete-factorial conditions with no observed zero,
+correlated predictors (r approximately .954), eight correlated channels with
+average-reference rank loss, and either six trials per condition or uneven
+counts `[4,8,5,9,6,4]`. Noise scales are .2, .8 and 1.6. Both estimators see
+identical training EEG and independent held-out condition means (20 trials per
+condition), on unchanged raw code scales. The predeclared penalty grid is
+component `[.1,1,10]` by condition `[.01,.1,1]`; there is no truth-selected winner.
+
+One residual scenario is orthogonal by construction, which favors the new
+allocation assumption. A second intentionally has overlapping omitted signal.
+Theoretical-pattern error then uses the explicitly projection-defined target,
+not the unknowable original latent attribution. At component=1, condition=.1,
+with uneven counts, the results are:
+
+| Residual generation | Noise | Theory MSE ridge / orthogonal | Held-out MSE ridge / orthogonal |
+| --- | ---: | ---: | ---: |
+| Orthogonal | .2 | .01730 / .01198 | .00561 / .01518 |
+| Orthogonal | .8 | .03085 / .02721 | .09127 / .07816 |
+| Orthogonal | 1.6 | .07186 / .07249 | .35392 / .26922 |
+| Overlapping | .2 | .03111 / .02652 | .00557 / .03003 |
+| Overlapping | .8 | .04474 / .04161 | .09086 / .09125 |
+| Overlapping | 1.6 | .08220 / .08431 | .36284 / .28610 |
+
+Across all 108 scenario/grid combinations, orthogonal mode has lower
+theoretical-pattern error in 70, held-out error in 57, and original-generative
+coefficient error in 72. These are sensitivity counts from a bounded simulation,
+not confidence probabilities or universal superiority. The practical benefit is
+removal of residual-penalty allocation dependence and, in several noisy cases,
+better recovery/prediction. Low-noise full prediction and some high-noise theory
+estimates are worse. The method is therefore explicit rather than a replacement
+default. A separate near-collinearity test confirms regularization reduces
+coefficient variance relative to unregularized projection; it does not promise
+that every setting is more stable than the current, heavily shrunk ridge model.
+On a small 32-trial/five-condition/four-channel/two-bin fit, median numerical
+fit time over five batches of 1,000 was about 10 microseconds for ridge and
+23 microseconds for orthogonal mode. This adds a small QR/least-squares cost;
+it is not an end-to-end EEG performance benchmark.
+
 ## Cross-validation, covariance, and expression
 
 Training trials are split with one shuffled stratified K-fold partition. Every

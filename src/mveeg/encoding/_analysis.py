@@ -11,7 +11,12 @@ from joblib import Parallel, delayed
 from sklearn.model_selection import StratifiedKFold
 from tqdm.auto import tqdm
 
-from ._metrics import compute_pattern_expression, estimate_channel_covariance, fit_ridge
+from ._metrics import (
+    compute_pattern_expression,
+    estimate_channel_covariance,
+    fit_orthogonal,
+    fit_ridge,
+)
 from ._prepare import EncodingDesign, build_design
 
 
@@ -37,6 +42,8 @@ def encode_subject(
     seed: int,
     n_jobs: int = 1,
     progress: bool = True,
+    method: str = "ridge",
+    weights: dict[str, float] | None = None,
 ) -> SubjectEncoding:
     """Fit one subject and return public result rows."""
 
@@ -58,6 +65,8 @@ def encode_subject(
         training_labels=training_labels,
         condition_order=condition_order,
         penalty=penalty,
+        method=method,
+        weights=weights,
     )
     training = pd.notna(training_labels)
     counts = pd.Series(training_labels[training]).value_counts()
@@ -121,11 +130,7 @@ def encode_subject(
     )
 
     full_rows = np.flatnonzero(training)
-    full_beta = fit_ridge(
-        data[full_rows],
-        design.matrix[full_rows],
-        design.predictors["penalty"].to_numpy(dtype=float),
-    )
+    full_beta = _fit_design(data[full_rows], design, full_rows)
     coefficients = _coefficient_table(
         subject=subject,
         beta=full_beta,
@@ -162,6 +167,19 @@ def encode_subject(
     )
 
 
+def _fit_design(data: np.ndarray, design: EncodingDesign, rows: np.ndarray) -> np.ndarray:
+    if design.method == "orthogonal":
+        return fit_orthogonal(
+            data,
+            design.matrix[rows, 1 + len(design.components) :],
+            design.condition_design,
+            design.condition_weights,
+            float(design.predictors.loc[1, "penalty"]),
+            float(design.predictors.iloc[-1]["penalty"]),
+        )
+    return fit_ridge(data, design.matrix[rows], design.predictors["penalty"].to_numpy(dtype=float))
+
+
 def _fit_fold(
     *,
     subject: str,
@@ -176,11 +194,7 @@ def _fit_fold(
     times: np.ndarray,
 ) -> dict[str, object]:
     train_design = design.matrix[train_rows]
-    beta = fit_ridge(
-        data[train_rows],
-        train_design,
-        design.predictors["penalty"].to_numpy(dtype=float),
-    )
+    beta = _fit_design(data[train_rows], design, train_rows)
     train_mean = data[train_rows].mean(axis=0, keepdims=True)
     precision = np.empty((data.shape[2], data.shape[1], data.shape[1]))
     covariance_rows = []
@@ -308,9 +322,14 @@ def _design_diagnostics(
     matrix = design.matrix[rows]
     component_columns = 1 + len(design.components)
     diagnostics = []
+    model_matrix = matrix
+    if design.method == "orthogonal":
+        # The constrained theory-plus-residual fit has only condition-space
+        # degrees of freedom, not the overlapping raw dummy parametrization.
+        model_matrix = matrix[:, component_columns:]
     for name, values in (
         ("component", matrix[:, :component_columns]),
-        ("model", matrix),
+        ("model", model_matrix),
     ):
         rank = int(np.linalg.matrix_rank(values))
         columns = int(values.shape[1])
@@ -356,6 +375,21 @@ def _design_diagnostics(
                     ),
                 }
             )
+    if design.method == "orthogonal":
+        weighted = np.sqrt(design.condition_weights)[:, None] * design.condition_design
+        condition_number = float(np.linalg.cond(weighted))
+        diagnostics.append(
+            {
+                "subject_index": subject,
+                "fold": fold,
+                "diagnostic": "weighted_theory_condition_number",
+                "predictor": None,
+                "value": condition_number,
+                "threshold": 1e8,
+                "status": "warning" if condition_number > 1e8 else "ok",
+                "message": "near-collinear identifiable codes remain regularized",
+            }
+        )
     return diagnostics
 
 

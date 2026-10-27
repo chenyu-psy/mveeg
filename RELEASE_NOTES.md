@@ -1,3 +1,10 @@
+# Unreleased
+
+- Add explicit `setup_model(method="orthogonal", weights=...)` for denoised
+  condition-space decomposition with theoretical-orthogonal residual patterns.
+  Existing ridge remains the default. Document estimator-specific penalty
+  scales, identifiable condition codes, and paired synthetic accuracy tradeoffs.
+
 # mveeg 0.3.2
 
 mveeg 0.3.2 fixes artifact-labeling persistence without changing the public API
