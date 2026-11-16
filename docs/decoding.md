@@ -47,7 +47,9 @@ pipeline.decode(
 ordered mapping from classifier labels to raw target values and must define at
 least two labels. When `evidence=None`, evidence groups exactly inherit
 `classes`. An explicit evidence mapping may add non-training conditions, but it
-must include every raw value used by `classes`.
+must include every raw value used by `classes`. Raw values may be given as
+lists, tuples, NumPy arrays, or pandas objects such as `df["load"].unique()`;
+sets are rejected because their order is not stable.
 
 `generalization` is independent of `evidence`. It accepts `None` or a mapping
 from classifier labels to raw values in the same post-transform `target`
@@ -79,6 +81,8 @@ only when it is explicitly set, so the default remains compatible with
 existing 0.3.1 configurations.
 
 `prepare_epochs()` expresses `crop` in seconds and `time_bin` in milliseconds.
+Either `crop` bound may be `None` to keep the epoch's own start or end, and
+`time_bin` must be a whole number of milliseconds (`50` or `50.0`).
 The result tables use milliseconds without a unit suffix. `time` is the bin
 center; exact `start` and `end` values are stored in `time_bins`.
 
@@ -116,8 +120,8 @@ Subjects are prepared, decoded, and committed one at a time. Within the active
 subject, `n_jobs` controls the maximum number of complete repeats evaluated in
 parallel; balancing, folds, and permutation labels remain contained within
 their repeat. `progress=True` shows one standard repeat-level progress bar for
-each subject that is actually computed. Progress display and `n_jobs` do not
-enter the analysis fingerprint.
+each subject that is actually computed. `n_jobs` follows joblib, so `-1` uses
+every CPU. Progress display and `n_jobs` do not enter the analysis fingerprint.
 
 At each fold and training time, one fitted model supplies observed accuracy,
 raw confusion counts, classifier evidence, and Haufe patterns. When a
@@ -228,3 +232,14 @@ transactionally with complete schema-2 results.
 
 Common transaction, version, fixed-column, and unitless channel-coordinate
 rules are documented once in the [DuckDB result contract](results.md).
+
+## Dataset-level subject selection
+
+Record shared exclusions once after preprocessing and manual review with
+`prep.open_pipeline(dataset).select_subjects(exclude={"4001": "Poor signal"})`.
+This pipeline automatically reads the saved exclusions on every execution;
+no additional analysis configuration is needed. Excluded subjects remain in
+`subject_indices`, but are skipped before loading or fitting. Existing results
+are retained with `recompute="never"` and deleted with `"changed"` or `"all"`.
+See [the review workflow](quality.md#subject-selection-after-review) and
+[the result contract](results.md#dataset-level-subject-exclusions).

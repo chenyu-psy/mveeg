@@ -1,4 +1,4 @@
-"""EyeLink discovery, EDF conversion, and strict ASC reading."""
+"""EyeLink discovery, EDF conversion, and ASC reading."""
 
 from __future__ import annotations
 
@@ -51,9 +51,15 @@ def eyelink_files(subject_dir: Path) -> list[Path]:
 
 
 def read_eyelink(path: Path) -> mne.io.RawArray:
-    """Read binocular samples and message markers from EyeLink ASCII."""
+    """Read gaze, pupil, and message markers from EyeLink ASCII.
+
+    The recorded eyes come from the ``SAMPLES`` header, so binocular files give
+    left and right channels and monocular files give channels for one eye.
+    Extra sample columns (velocity, resolution, status flags) are ignored.
+    """
 
     sfreq: float | None = None
+    eyes: tuple[str, ...] | None = None
     samples: list[list[float]] = []
     messages: list[tuple[int, str]] = []
     with path.open("r") as handle:
@@ -63,21 +69,33 @@ def read_eyelink(path: Path) -> mne.io.RawArray:
                 parts = stripped.split()
                 if "RATE" in parts:
                     sfreq = float(parts[parts.index("RATE") + 1])
+                header_eyes = tuple(eye for eye in ("left", "right") if eye.upper() in parts)
+                if header_eyes:
+                    if eyes is not None and header_eyes != eyes:
+                        raise ValueError(
+                            f"EyeLink recording blocks in {path} track different eyes: "
+                            f"{list(eyes)} and {list(header_eyes)}."
+                        )
+                    eyes = header_eyes
             elif stripped.startswith("MSG"):
                 parts = stripped.split(maxsplit=2)
                 if len(parts) == 3:
                     messages.append((int(parts[1]), parts[2].split()[-1]))
-            else:
+            elif eyes is not None:
                 parts = stripped.split()
-                if len(parts) >= 7 and parts[0].isdigit():
+                n_values = 3 * len(eyes)
+                if len(parts) > n_values and parts[0].isdigit():
                     try:
                         row = [float(parts[0])]
-                        row.extend(np.nan if value == "." else float(value) for value in parts[1:7])
+                        row.extend(
+                            np.nan if value == "." else float(value)
+                            for value in parts[1 : n_values + 1]
+                        )
                         samples.append(row)
                     except ValueError:
                         continue
-    if sfreq is None or not samples:
-        raise ValueError(f"Could not find sampling rate and binocular samples in {path}.")
+    if sfreq is None or eyes is None or not samples:
+        raise ValueError(f"Could not find sampling rate, tracked eyes, and samples in {path}.")
     array = np.asarray(samples)
     sample_clock = array[:, 0].astype(int)
     if np.any(np.diff(sample_clock) <= 0):
@@ -87,12 +105,12 @@ def read_eyelink(path: Path) -> mne.io.RawArray:
     reconstructed = sample_clock[0] + sample_ix * sample_step
     if not np.allclose(reconstructed, sample_clock, atol=sample_step / 4):
         raise ValueError(f"EyeLink timestamps do not match the sampling rate in {path}.")
-    data = np.full((6, sample_ix[-1] + 1), np.nan, dtype=float)
+    data = np.full((3 * len(eyes), sample_ix[-1] + 1), np.nan, dtype=float)
     data[:, sample_ix] = array[:, 1:].T
     info = mne.create_info(
-        ["xpos_left", "ypos_left", "pupil_left", "xpos_right", "ypos_right", "pupil_right"],
+        [f"{kind}_{eye}" for eye in eyes for kind in ("xpos", "ypos", "pupil")],
         sfreq=sfreq,
-        ch_types=["eyegaze", "eyegaze", "pupil", "eyegaze", "eyegaze", "pupil"],
+        ch_types=["eyegaze", "eyegaze", "pupil"] * len(eyes),
     )
     raw = mne.io.RawArray(data, info, verbose="ERROR")
     messages = [

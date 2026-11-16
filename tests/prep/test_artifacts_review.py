@@ -170,6 +170,24 @@ def test_review_group_contract_and_metadata_grouping():
     )
 
     assert session.target_epoch_indices == (0, 1)
+    with_extra = pd.concat(
+        [
+            metadata,
+            pd.DataFrame({"subject_index": ["4001"], "epoch_index": [7], "condition": ["target"]}),
+        ]
+    )
+    extra_session = ReviewSession(
+        table, subject_index="4001", metadata=with_extra, group_by="condition", label="target"
+    )
+    assert extra_session.target_epoch_indices == (0, 1)
+    with pytest.raises(ValueError, match="no row for artifact keys"):
+        ReviewSession(
+            table,
+            subject_index="4001",
+            metadata=metadata.iloc[1:],
+            group_by="condition",
+            label="target",
+        )
     with pytest.raises(ValueError, match="supplied together"):
         ReviewSession(table, subject_index="4001", group_by="initial_status")
 
@@ -607,3 +625,24 @@ def test_schema_has_no_unrequested_review_audit_fields():
         "epoch_reasons",
         "reviewed",
     )
+
+
+def test_review_accepts_numpy_integers_and_unknown_ignored_channels():
+    """NumPy integer windows and absent study-wide ignored channels are tolerated."""
+    session = ReviewSession(
+        _all_review_table(4), subject_index="4001", window_size=np.int64(2), on_commit=list
+    )
+    shown = session.mark_displayed(window_start=np.int64(1), window_size=np.int64(2))
+    assert shown["epoch_index"].tolist() == [1, 2]
+    with pytest.raises(ValueError, match="window_size"):
+        ReviewSession(_all_review_table(2), subject_index="4001", window_size=True)
+    with pytest.warns(UserWarning, match=r"ignoring \['T7'\]"):
+        table = build_artifact_table(
+            "4001",
+            range(2),
+            ["Cz"],
+            epoch_review=np.ones(2, dtype=bool),
+            epoch_reasons={"large_p2p": np.ones(2, dtype=bool)},
+            ignore_channels=["T7"],
+        )
+    assert len(table) == 2

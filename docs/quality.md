@@ -39,7 +39,10 @@ Set `autoreject=None` to skip AutoReject. Otherwise AutoReject is fit only on
 eligible EEG data. `autoreject.exclude_channels` keeps named channels in the
 saved epochs while excluding them from threshold fitting, cross-validation,
 voting, and interpolation. Channels in `epochs.info["bads"]` follow the same
-model-exclusion behavior. Excluded-channel labels are stored as `-1`.
+model-exclusion behavior. Excluded-channel labels are stored as `-1`. A
+study-wide list may name channels that a subject lacks; those names are
+ignored with a warning. When `consensus` is omitted, AutoReject's default
+candidate grid is used and saved in the diagnostics.
 
 ## Artifact rules
 
@@ -68,6 +71,9 @@ preprocessed.label_artifacts(
 
 preprocessed.artifact_counts(status="initial_status")
 ```
+
+`ignore_channels` (and `hide_channels` during review) may also be study-wide:
+channels a subject lacks are ignored with a warning.
 
 Use `recompute="changed"` to reuse complete sidecars when the rules are
 unchanged, `"all"` to force relabeling, or `"never"` to preserve existing
@@ -114,3 +120,42 @@ Review state is transactional and separate from the Matplotlib presentation,
 so UI changes do not alter the artifact storage contract.
 `artifact_counts()` returns per-subject counts from `final_status` by default;
 pass `status="initial_status"` to inspect automatic labels instead.
+
+## Subject selection after review
+
+After saving manual decisions with `w` and closing the review window, inspect
+final trial counts and record exclusions once for the whole dataset:
+
+```python
+preprocessed.artifact_counts(status="final_status")
+preprocessed.select_subjects(
+    exclude={
+        "4001": "Insufficient accepted trials after manual review",
+        "4008": "Poor overall signal quality",
+    },
+)
+```
+
+`select_subjects()` returns the same dataset handle. Each call **replaces the
+complete exclusion list**; keep all exclusions in the mapping, or use
+`exclude={}` to restore everyone. Reasons are strings; an empty reason is
+allowed. Subject indices follow the usual normalization rules, and duplicate
+normalized or unknown indices are rejected before the saved list changes. If a
+subject later leaves the dataset, model runs ignore its saved exclusion with a
+warning.
+
+Exclusions are persisted in `subject_selection.tsv` in this dataset root.
+They survive reopening, artifact relabeling, and preprocessing reruns into the
+same root. New output roots start with no exclusions. All epochs, manifest
+rows, counts, and review tools remain accessible, including for excluded
+subjects. Dataset-level exclusions are researcher decisions; no automatic
+trial-count threshold is applied.
+
+Encoding and decoding automatically refresh the list on each run and skip
+excluded subjects before reading their data or computing input fingerprints.
+For an excluded subject with saved results, `recompute="never"` preserves
+those results; `"changed"` and `"all"` delete its results and subject-state row
+transactionally when the analysis is next run. Changing the list alone does
+not modify any result file. If all subjects are excluded, the run completes
+any required deletion, warns that nobody remains to analyze, and returns
+`None`. Restoring subjects resumes the ordinary recomputation rules.

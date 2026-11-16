@@ -9,13 +9,17 @@ from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 
 def jsonable(value: object) -> object:
     """Convert supported provenance values to deterministic JSON values.
 
     Provenance accepts only stable data. Callables, sets, and arbitrary
-    objects are rejected instead of being serialized with ``repr``.
+    objects are rejected instead of being serialized with ``repr``. Missing
+    values (NaN, ``pd.NA``, ``pd.NaT``) become ``None`` and infinities become
+    ``"inf"``/``"-inf"`` so metadata with missing trials stays serializable.
+    Integer mapping keys are written as strings.
     """
 
     if isinstance(value, Path):
@@ -27,17 +31,26 @@ def jsonable(value: object) -> object:
     if isinstance(value, Mapping):
         output: dict[str, object] = {}
         for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError("Provenance mapping keys must be strings.")
-            output[key] = jsonable(item)
+            if isinstance(key, np.generic):
+                key = key.item()
+            if not isinstance(key, (str, int)):
+                raise TypeError("Provenance mapping keys must be strings or integers.")
+            text = str(key)
+            if text in output:
+                raise ValueError(f"Provenance mapping has duplicate key {text!r} after conversion.")
+            output[text] = jsonable(item)
         return output
     if isinstance(value, (list, tuple)):
         return [jsonable(item) for item in value]
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("Provenance numbers must be finite.")
+        if math.isnan(value):
+            return None
+        if math.isinf(value):
+            return "inf" if value > 0 else "-inf"
         return value
     raise TypeError(
         "Unsupported provenance value "
@@ -55,6 +68,23 @@ def fingerprint(value: object) -> str:
         ensure_ascii=False,
     )
     return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def settings_fingerprint(config: Mapping[str, object] | str) -> str:
+    """Fingerprint analysis settings without package version or dataset location.
+
+    Result files stay compatible across mveeg patch releases and when a dataset
+    is moved (for example from a laptop to a cluster). Both values remain in the
+    stored configuration as provenance. ``config`` may be the stored JSON text.
+    """
+
+    if isinstance(config, str):
+        config = json.loads(config)
+    settings = {key: value for key, value in config.items() if key != "mveeg_version"}
+    dataset = settings.get("dataset")
+    if isinstance(dataset, Mapping):
+        settings["dataset"] = {key: value for key, value in dataset.items() if key != "root"}
+    return fingerprint(settings)
 
 
 def fingerprint_files(paths: Sequence[str | Path], *, root: str | Path) -> str:

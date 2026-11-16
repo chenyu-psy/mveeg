@@ -16,6 +16,7 @@ import numpy as np
 from autoreject import AutoReject
 from sklearn.model_selection import KFold
 
+from ..._values import is_value_list, value_list
 from .eligibility import _channel_type_mask
 
 
@@ -148,16 +149,20 @@ def _autoreject_excluded_channels(
         raise ValueError(f"autoreject contains unsupported keys: {extra}.")
 
     value = config.get("exclude_channels", ())
-    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+    if not is_value_list(value):
         raise TypeError("autoreject.exclude_channels must be a sequence of channel names.")
-    excluded = tuple(value)
+    excluded = tuple(dict.fromkeys(value_list(value)))
     if any(not isinstance(channel, str) for channel in excluded):
         raise TypeError("autoreject.exclude_channels values must be channel names.")
-    if len(set(excluded)) != len(excluded):
-        raise ValueError("autoreject.exclude_channels cannot contain duplicates.")
+    # One study-wide list may name channels a given subject does not have.
     unknown = sorted(set(excluded).difference(epochs.ch_names))
     if unknown:
-        raise ValueError(f"autoreject.exclude_channels contains unknown channels: {unknown}.")
+        warnings.warn(
+            f"autoreject.exclude_channels names channels not in these epochs; ignoring {unknown}.",
+            UserWarning,
+            stacklevel=3,
+        )
+        excluded = tuple(channel for channel in excluded if channel in epochs.ch_names)
     non_eeg = sorted(set(excluded).difference(eeg_channels))
     if non_eeg:
         raise ValueError(
@@ -305,14 +310,6 @@ def apply_autoreject(
     if "consensus" in config:
         model_kwargs["consensus"] = _candidate_values(
             config["consensus"], name="consensus", integer=False
-        )
-    else:
-        warnings.warn(
-            "autoreject.consensus is not set; using AutoReject's default "
-            "candidate grid. Set consensus explicitly for reproducible "
-            "study-level behavior.",
-            UserWarning,
-            stacklevel=2,
         )
     model = AutoReject(**model_kwargs)
     repaired, log = model.fit_transform(epochs[selected], return_log=True)

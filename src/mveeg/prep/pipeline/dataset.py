@@ -19,7 +19,8 @@ from ..._dataset.manifest import (
     single_value,
 )
 from ..._dataset.metadata import validate_metadata_mirror
-from ..._dataset.store import recover_transaction, write_json_atomic
+from ..._dataset.selection import SELECTION_COLUMNS, validate_subject_selection
+from ..._dataset.store import recover_transaction, write_json_atomic, write_table_atomic
 from ..gaze import normalize_gaze_geometry
 
 
@@ -186,6 +187,26 @@ class DatasetPipeline:
             ignore_channels=ignore_channels,
             recompute=recompute,
         )
+
+    def select_subjects(self, *, exclude: Mapping[str | int, str]) -> DatasetPipeline:
+        """Replace this dataset's complete subject exclusion list and return self.
+
+        ``exclude`` maps subject indices to researcher-provided reasons. An
+        empty mapping restores all subjects. Excluded subjects remain available
+        for epoch loading, preprocessing, and artifact review. Model runs skip
+        them; recompute='never' retains their saved results, while 'changed'
+        and 'all' delete their saved subject rows.
+        """
+
+        if not isinstance(exclude, Mapping):
+            raise TypeError("exclude must map subject indices to reason strings.")
+        self.refresh()
+        selection = validate_subject_selection(
+            pd.DataFrame(list(exclude.items()), columns=SELECTION_COLUMNS),
+            self.subject_indices,
+        )
+        write_table_atomic(selection, self.root / "subject_selection.tsv")
+        return self
 
     def artifact_counts(self, *, status: str = "final_status") -> pd.DataFrame:
         """Return per-subject counts for automatic or final artifact status."""

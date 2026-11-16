@@ -200,7 +200,7 @@ def _write_support(
         insert_frame(connection, "time_bins", time_bins)
         return
     require_equal_frame(connection, "predictors", predictors)
-    require_equal_frame(connection, "channels", channels)
+    require_equal_frame(connection, "channels", channels, key="channel")
     require_equal_frame(connection, "time_bins", time_bins)
 
 

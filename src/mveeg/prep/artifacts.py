@@ -7,6 +7,7 @@ separate fields so relabeling cannot silently overwrite reviewed decisions.
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -325,7 +326,12 @@ def build_artifact_table(
     ignored = {str(channel) for channel in ignore_channels}
     unknown_ignored = sorted(ignored.difference(channel_names))
     if unknown_ignored:
-        raise ValueError(f"ignore_channels contains unknown channels: {unknown_ignored}.")
+        # A study-wide list may name channels this subject does not have.
+        warnings.warn(
+            f"ignore_channels names channels not in this subject; ignoring {unknown_ignored}.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     rejected_matrix = _coerce_reason_matrix(
         rejected_reasons,

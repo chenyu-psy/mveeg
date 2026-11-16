@@ -290,7 +290,7 @@ def _write_support(
     ]
     if normalized_components != expected_components:
         raise RuntimeError("Pattern components differ between subjects.")
-    require_equal_frame(connection, "channels", channels)
+    require_equal_frame(connection, "channels", channels, key="channel")
     require_equal_frame(connection, "time_bins", time_bins)
 
 

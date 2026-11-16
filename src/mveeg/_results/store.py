@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -10,13 +10,12 @@ import pandas as pd
 
 
 def normalize_result_path(file: str | Path, *, analysis: str) -> Path:
-    """Normalize a caller-provided DuckDB result path."""
+    """Normalize a caller-provided DuckDB result path, appending ``.duckdb`` if needed."""
 
     path = Path(file).expanduser()
-    if path.suffix == "":
-        path = path.with_suffix(".duckdb")
     if path.suffix != ".duckdb":
-        raise ValueError(f"{analysis.capitalize()} results must use the .duckdb suffix.")
+        # Append rather than replace, so names like "load_tmin-0.2" keep their dots.
+        path = path.with_name(path.name + ".duckdb")
     return path.resolve()
 
 
@@ -56,6 +55,13 @@ def read_analysis_row(path: Path, *, analysis: str) -> dict[str, object] | None:
         if len(values) != 1:
             raise ValueError(f"The {analysis} analysis table must contain exactly one row.")
     return dict(zip(columns, values[0], strict=True))
+
+
+def update_analysis_fingerprint(path: Path, fingerprint: str) -> None:
+    """Replace the stored analysis fingerprint for compatible existing settings."""
+
+    with duckdb.connect(str(path)) as connection:
+        connection.execute("UPDATE analysis SET fingerprint = ?", [fingerprint])
 
 
 def create_subjects_table(connection: duckdb.DuckDBPyConnection) -> None:
@@ -100,12 +106,7 @@ def mark_pending(
     with duckdb.connect(str(path)) as connection:
         connection.execute("BEGIN TRANSACTION")
         try:
-            for table in subject_tables:
-                if table_exists(connection, table):
-                    connection.execute(
-                        f'DELETE FROM "{table}" WHERE subject_index = ?', [subject_index]
-                    )
-            connection.execute("DELETE FROM subjects WHERE subject_index = ?", [subject_index])
+            _delete_subject_rows(connection, subject_index, subject_tables)
             connection.execute(
                 "INSERT INTO subjects VALUES (?, 'pending', ?, NULL, ?)",
                 [subject_index, fingerprint, now()],
@@ -114,6 +115,31 @@ def mark_pending(
         except Exception:
             connection.execute("ROLLBACK")
             raise
+
+
+def delete_subject(path: Path, subject_index: str, *, subject_tables: tuple[str, ...]) -> None:
+    """Atomically remove a subject's results and state without scheduling work."""
+
+    with duckdb.connect(str(path)) as connection:
+        connection.execute("BEGIN TRANSACTION")
+        try:
+            _delete_subject_rows(connection, subject_index, subject_tables)
+            connection.execute("UPDATE analysis SET updated = ?", [now()])
+            connection.execute("COMMIT")
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+
+
+def _delete_subject_rows(
+    connection: duckdb.DuckDBPyConnection,
+    subject_index: str,
+    subject_tables: tuple[str, ...],
+) -> None:
+    for table in subject_tables:
+        if table_exists(connection, table):
+            connection.execute(f'DELETE FROM "{table}" WHERE subject_index = ?', [subject_index])
+    connection.execute("DELETE FROM subjects WHERE subject_index = ?", [subject_index])
 
 
 def mark_failed(path: Path, subject_index: str, fingerprint: str, reason: str) -> None:
@@ -192,14 +218,31 @@ def require_equal_frame(
     connection: duckdb.DuckDBPyConnection,
     table_name: str,
     expected: pd.DataFrame,
+    *,
+    key: str | None = None,
 ) -> None:
-    """Require one support table to match earlier subjects exactly."""
+    """Require one support table to match earlier subjects.
+
+    Values are compared after the DuckDB round trip, so dtype differences
+    (for example int32 versus int64) and float rounding are ignored. With
+    ``key``, rows are matched by that column, so row order may differ.
+    """
 
     observed = connection.execute(f'SELECT * FROM "{table_name}"').df()
-    if list(observed.columns) != list(expected.columns) or not observed.equals(
-        expected.reset_index(drop=True)
-    ):
+    expected = expected.reset_index(drop=True)
+    if list(observed.columns) != list(expected.columns):
         raise RuntimeError(f"{table_name} differs between subjects.")
+    if key is not None:
+        if set(observed[key]) != set(expected[key]) or len(observed) != len(expected):
+            raise RuntimeError(f"{table_name} differs between subjects.")
+        observed = observed.sort_values(key, kind="stable").reset_index(drop=True)
+        expected = expected.sort_values(key, kind="stable").reset_index(drop=True)
+    try:
+        pd.testing.assert_frame_equal(
+            observed, expected, check_dtype=False, check_exact=False, rtol=1e-9, atol=1e-12
+        )
+    except AssertionError as error:
+        raise RuntimeError(f"{table_name} differs between subjects.") from error
 
 
 def require_columns(
@@ -228,4 +271,4 @@ def require_trial_prefix(frame: pd.DataFrame, prefix: tuple[str, ...]) -> None:
 def now() -> str:
     """Return the current UTC timestamp."""
 
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()

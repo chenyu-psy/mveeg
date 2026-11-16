@@ -8,7 +8,11 @@ import pandas as pd
 
 
 def build_topography_coord_table(*, info: mne.Info, channels: list[str]) -> pd.DataFrame:
-    """Return normalized layout-box centers in the requested channel order."""
+    """Return normalized layout-box centers in the requested channel order.
+
+    Coordinates are only used for plotting. Epochs without electrode positions
+    get NaN ``x``/``y`` so models can still be fit and stored.
+    """
 
     missing = [channel for channel in channels if channel not in info["ch_names"]]
     if missing:
@@ -17,10 +21,8 @@ def build_topography_coord_table(*, info: mne.Info, channels: list[str]) -> pd.D
     picked_info = mne.pick_info(info, picks, copy=True)
     try:
         layout = mne.channels.make_eeg_layout(picked_info, exclude=[])
-    except (RuntimeError, ValueError) as error:
-        raise ValueError(
-            "Could not create a topography layout; saved epochs need electrode positions."
-        ) from error
+    except (RuntimeError, ValueError):
+        return pd.DataFrame({"channel": channels, "x": np.nan, "y": np.nan})
     positions = {
         name: position[:2] + position[2:] / 2
         for name, position in zip(layout.names, layout.pos, strict=True)

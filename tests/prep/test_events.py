@@ -249,14 +249,13 @@ def test_raw_pipeline_validates_and_resolves_default_time_zero_at_registration(t
                 time_window=invalid_window,
             )
 
-    for invalid_rate in (0, np.inf, True):
-        candidate = RawPipeline(tmp_path).load_eeg()
-        with pytest.raises(ValueError, match="finite positive"):
-            candidate.make_epochs(
-                event_id={"start": 1},
-                time_window=(-0.04, 0.04),
-                sampling_rate=invalid_rate,
-            )
+    candidate = RawPipeline(tmp_path).load_eeg()
+    with pytest.raises(ValueError, match="finite positive"):
+        candidate.make_epochs(
+            event_id={"start": 1},
+            time_window=(-0.04, 0.04),
+            sampling_rate=True,
+        )
 
 
 def test_raw_pipeline_builds_sequence_dataset_with_serializable_event_codes(

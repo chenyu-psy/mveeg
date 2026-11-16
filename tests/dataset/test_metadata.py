@@ -62,10 +62,31 @@ def test_provenance_accepts_only_stable_data():
     for unsupported in (lambda: None, object(), {"unordered"}):
         with pytest.raises(TypeError, match="Unsupported provenance value"):
             fingerprint(unsupported)
-    with pytest.raises(TypeError, match="keys must be strings"):
-        fingerprint({1: "value"})
-    with pytest.raises(ValueError, match="finite"):
-        fingerprint(float("nan"))
+    with pytest.raises(TypeError, match="keys must be strings or integers"):
+        fingerprint({(1, 2): "value"})
+    with pytest.raises(ValueError, match="duplicate key"):
+        fingerprint({1: "a", "1": "b"})
+
+
+def test_provenance_accepts_missing_values_and_integer_keys():
+    value = {
+        np.int64(2): "low",
+        6: "high",
+        "rt": [0.5, float("nan"), pd.NA],
+        "h_freq": float("inf"),
+        "l_freq": -np.inf,
+    }
+    assert jsonable(value) == {
+        "2": "low",
+        "6": "high",
+        "rt": [0.5, None, None],
+        "h_freq": "inf",
+        "l_freq": "-inf",
+    }
+    metadata = pd.DataFrame({"rt": [0.4, np.nan], "probe": ["a", None]})
+    assert fingerprint(metadata.to_dict(orient="list")) == fingerprint(
+        metadata.to_dict(orient="list")
+    )
 
 
 def test_dataset_loader_rejects_artifact_key_mismatch(tmp_path):

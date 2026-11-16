@@ -34,3 +34,10 @@ def test_single_channel_topography_is_finite_and_centered():
     table = build_topography_coord_table(info=info, channels=["Cz"])
 
     assert table.to_dict("records") == [{"channel": "Cz", "x": 0.5, "y": 0.5}]
+
+
+def test_topography_without_positions_returns_missing_coordinates():
+    info = mne.create_info(["A", "B"], 100, "eeg")
+    table = build_topography_coord_table(info=info, channels=["A", "B"])
+    assert table["channel"].tolist() == ["A", "B"]
+    assert table[["x", "y"]].isna().all(axis=None)

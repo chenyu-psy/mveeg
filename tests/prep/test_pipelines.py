@@ -284,12 +284,26 @@ def test_eyelink_reader_bypasses_mne_and_preserves_signed_values(tmp_path, monke
     assert raw.get_data()[4, 0] == pytest.approx(-94.4)
 
 
+def test_eyelink_reader_supports_monocular_recordings(tmp_path) -> None:
+    """Monocular files give one eye's channels and ignore extra sample columns."""
+    asc = tmp_path / "eye.asc"
+    asc.write_text(
+        "SAMPLES GAZE RIGHT VEL RATE 500 TRACKING CR FILTER 2\n"
+        "1000 1 2 3 0.1 0.2 ...\n"
+        "1002 4 5 6 0.3 0.4 ...\n"
+    )
+    raw = _read_eyelink(asc)
+    assert raw.ch_names == ["xpos_right", "ypos_right", "pupil_right"]
+    assert raw.info["sfreq"] == 500
+    assert raw.get_data().tolist() == [[1, 4], [2, 5], [3, 6]]
+
+
 def test_eyelink_reader_rejects_unreadable_file(tmp_path) -> None:
     """A wholly unreadable file reports the missing native ASC content."""
     asc = tmp_path / "eye.asc"
     asc.write_text("not EyeLink data\n")
 
-    with pytest.raises(ValueError, match="Could not find sampling rate and binocular samples"):
+    with pytest.raises(ValueError, match="Could not find sampling rate, tracked eyes, and samples"):
         _read_eyelink(asc)
 
 
@@ -317,6 +331,20 @@ def test_external_merge_and_transform_protect_identity() -> None:
         metadata_key="behavior_trial",
     )
     assert merged.metadata["condition"].tolist() == ["a", "b", "c"]
+    with_practice = merge_metadata(
+        epochs,
+        pd.DataFrame({"behavior_trial": [0, 1, 2, 3], "condition": ["p", "b", "a", "c"]}),
+        epoch_key="source_trial",
+        metadata_key="behavior_trial",
+    )
+    assert with_practice.metadata["condition"].tolist() == ["a", "b", "c"]
+    with pytest.raises(ValueError, match="no row for epoch keys"):
+        merge_metadata(
+            epochs,
+            pd.DataFrame({"behavior_trial": [1, 2], "condition": ["b", "a"]}),
+            epoch_key="source_trial",
+            metadata_key="behavior_trial",
+        )
     with pytest.raises(ValueError, match="unique"):
         merge_metadata(
             epochs,
@@ -637,6 +665,38 @@ def test_raw_pipeline_prefilters_then_aligns_then_selects(tmp_path) -> None:
     ]
 
 
+def test_raw_behavior_stacks_block_files_in_sorted_order(tmp_path) -> None:
+    """Per-block behavior files are stacked in the same sorted order as EEG files."""
+    input_dir = tmp_path / "raw"
+    subject_dir = input_dir / "sub4001"
+    subject_dir.mkdir(parents=True)
+    info = mne.create_info(["Cz", "Pz"], sfreq=100, ch_types="eeg")
+    raw = mne.io.RawArray(np.zeros((2, 600)), info, verbose="ERROR")
+    raw.set_annotations(
+        mne.Annotations(onset=[1.0, 3.0], duration=[0.0, 0.0], description=["stim", "stim"])
+    )
+    raw.save(subject_dir / "sub4001_raw.fif", overwrite=True, verbose="ERROR")
+    pd.DataFrame({"label": ["B"]}).to_csv(subject_dir / "sub4001_block2_beh.csv", index=False)
+    pd.DataFrame({"label": ["A"]}).to_csv(subject_dir / "sub4001_block1_beh.csv", index=False)
+
+    pipeline = init_pipeline(input_dir)
+    pipeline.load_eeg("*_raw.fif")
+    pipeline.load_behavior("*_beh.csv")
+    pipeline.make_epochs(event_id={"stim": 1}, time_window=(-0.1, 0.2))
+    pipeline.align_behavior()
+    dataset = pipeline.build_epochs(tmp_path / "prepared", task="task")
+    assert dataset.load_epochs("4001").metadata["label"].tolist() == ["A", "B"]
+
+    pd.DataFrame({"other": ["C"]}).to_csv(subject_dir / "sub4001_block3_beh.csv", index=False)
+    pipeline = init_pipeline(input_dir)
+    pipeline.load_eeg("*_raw.fif")
+    pipeline.load_behavior("*_beh.csv")
+    pipeline.make_epochs(event_id={"stim": 1}, time_window=(-0.1, 0.2))
+    pipeline.align_behavior()
+    with pytest.raises(ValueError, match="different columns"):
+        pipeline.build_epochs(tmp_path / "prepared2", task="task")
+
+
 def test_raw_build_progress_tracks_selected_and_reused(tmp_path, monkeypatch) -> None:
     """The one dataset bar covers every selected subject, including reuse."""
     input_dir = tmp_path / "raw"
@@ -736,3 +796,72 @@ def test_raw_pipeline_requires_real_phase_dependencies(tmp_path) -> None:
     pipeline.make_epochs(event_id={"stim": 1}, time_window=(0, 1))
     pipeline.load_behavior("*.csv")
     pipeline.align_behavior()
+
+
+def test_subject_selection_persists_without_hiding_data(tmp_path, monkeypatch):
+    from mveeg._dataset.selection import read_subject_selection
+
+    prepared = init_external(subject_index="001", data=_epochs()).build_epochs(
+        tmp_path / "prepared", task="task"
+    )
+    eligibility = {"eeg": {"absolute_value": 1.0, "step": 1.0, "p2p": 1.0, "bad_channels": 2}}
+    dataset = prepared.preprocess_epochs(tmp_path / "preprocessed", eligibility=eligibility)
+    assert read_subject_selection(dataset.root, dataset.subject_indices).empty
+    assert dataset.select_subjects(exclude={"sub-001": "有效试次不足"}) is dataset
+    saved = (dataset.root / "subject_selection.tsv").read_bytes()
+    reopened = open_pipeline(dataset.root)
+    assert reopened.subject_indices == ("001",)
+    assert len(reopened.manifest) == 1
+    assert len(reopened.load_epochs("001")) == 3
+    selection = read_subject_selection(reopened.root, reopened.subject_indices)
+    assert selection.to_dict("records") == [{"subject_index": "001", "reason": "有效试次不足"}]
+    dataset.label_artifacts(reject={}, review=eligibility)
+    reviewed = []
+    monkeypatch.setattr(
+        "mveeg.prep.review.figure.open_review_figure",
+        lambda session, epochs, **kwargs: reviewed.append(len(epochs)),
+    )
+    dataset.review_artifacts(subject_index="001")
+    assert reviewed == [3]
+    dataset.select_subjects(exclude={"001": "整体质量差"})
+    dataset.select_subjects(exclude={"001": "有效试次不足"})
+    assert (dataset.root / "subject_selection.tsv").read_bytes() == saved
+    dataset = prepared.preprocess_epochs(dataset.root, eligibility=eligibility, recompute="all")
+    assert (dataset.root / "subject_selection.tsv").read_bytes() == saved
+    dataset.label_artifacts(reject={}, review=eligibility)
+    assert (dataset.root / "subject_selection.tsv").read_bytes() == saved
+    fresh = prepared.preprocess_epochs(tmp_path / "fresh", eligibility=eligibility)
+    assert read_subject_selection(fresh.root, fresh.subject_indices).empty
+    dataset.select_subjects(exclude={})
+    assert read_subject_selection(dataset.root, dataset.subject_indices).empty
+
+
+def test_subject_selection_read_ignores_subjects_no_longer_in_dataset(tmp_path):
+    from mveeg._dataset.selection import read_subject_selection
+
+    (tmp_path / "subject_selection.tsv").write_text(
+        "subject_index\treason\n001\tnoisy\n002\tremoved later\n", encoding="utf-8"
+    )
+    with pytest.warns(UserWarning, match="not in the dataset"):
+        selection = read_subject_selection(tmp_path, ["001"])
+    assert selection.to_dict("records") == [{"subject_index": "001", "reason": "noisy"}]
+
+
+@pytest.mark.parametrize(
+    "exclude, error, message",
+    [
+        ({"001": "one", "sub-001": "two"}, ValueError, "duplicate"),
+        ({"002": "unknown"}, ValueError, "unknown"),
+        ({"001": None}, TypeError, "reasons"),
+        (["001"], TypeError, "map subject"),
+    ],
+)
+def test_subject_selection_rejects_invalid_updates_atomically(tmp_path, exclude, error, message):
+    dataset = init_external(subject_index="001", data=_epochs()).build_epochs(
+        tmp_path / "prepared", task="task"
+    )
+    dataset.select_subjects(exclude={"001": "keep this exclusion"})
+    saved = (dataset.root / "subject_selection.tsv").read_bytes()
+    with pytest.raises(error, match=message):
+        dataset.select_subjects(exclude=exclude)
+    assert (dataset.root / "subject_selection.tsv").read_bytes() == saved

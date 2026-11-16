@@ -6,12 +6,14 @@ import secrets
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from importlib.metadata import version
+from numbers import Real
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from .._analysis.epochs import average_time_bins, build_time_bins, channels_to_drop
+from .._analysis.jobs import resolve_n_jobs
 from .._analysis.topography import build_topography_coord_table
 from .._dataset.manifest import (
     load_subject_epochs_and_metadata,
@@ -20,10 +22,14 @@ from .._dataset.manifest import (
     subject_paths,
 )
 from .._dataset.metadata import assign_metadata_variables, validate_metadata_variables
-from .._provenance import fingerprint, fingerprint_files
+from .._dataset.selection import read_subject_selection
+from .._provenance import fingerprint, fingerprint_files, settings_fingerprint
+from .._results.store import delete_subject, update_analysis_fingerprint
+from .._values import is_value_list, value_list
 from ._analysis import SubjectEncoding, encode_subject
 from ._prepare import DEFAULT_DROP_TYPES, select_trials, validate_groups
 from ._storage import (
+    SUBJECT_TABLES,
     completed_subjects,
     initialize_store,
     mark_failed,
@@ -81,12 +87,12 @@ class EncodingPipeline:
         for column, rule in (exclude or {}).items():
             if not isinstance(column, str) or column.strip() == "":
                 raise ValueError("exclude keys must be non-empty metadata column names.")
-            if rule == "notna":
+            if isinstance(rule, str) and rule == "notna":
                 normalized_exclude[column] = "notna"
-            elif isinstance(rule, (str, bytes)) or not isinstance(rule, Sequence):
-                raise TypeError("exclude rules must be sequences or 'notna'.")
+            elif not is_value_list(rule):
+                raise TypeError("exclude rules must be lists or arrays of values, or 'notna'.")
             else:
-                normalized_exclude[column] = tuple(rule)
+                normalized_exclude[column] = tuple(value_list(rule))
         self._trial_selection = {
             "qc": qc,
             "keep": list(keep),
@@ -97,21 +103,30 @@ class EncodingPipeline:
     def prepare_epochs(
         self,
         *,
-        crop: tuple[float, float] | None = (0.0, 0.8),
-        time_bin: int = 50,
+        crop: tuple[float | None, float | None] | None = (0.0, 0.8),
+        time_bin: float = 50,
         drop_channel_types: Sequence[str] = DEFAULT_DROP_TYPES,
         drop_channels: Sequence[str] = (),
     ) -> EncodingPipeline:
         """Register epoch cropping, time bins, and analysis channels."""
 
         if crop is not None:
-            if len(crop) != 2 or not np.all(np.isfinite(crop)) or crop[0] >= crop[1]:
+            if len(crop) != 2:
+                raise ValueError("crop must contain start/end times in seconds.")
+            # None keeps the epoch's own start or end, as in mne.Epochs.crop.
+            crop_value = [None if bound is None else float(bound) for bound in crop]
+            bounds = [bound for bound in crop_value if bound is not None]
+            if not np.all(np.isfinite(bounds)) or (len(bounds) == 2 and bounds[0] >= bounds[1]):
                 raise ValueError("crop must contain finite increasing start/end times in seconds.")
-            crop_value = [float(crop[0]), float(crop[1])]
         else:
             crop_value = None
-        if not isinstance(time_bin, (int, np.integer)) or int(time_bin) < 1:
-            raise ValueError("time_bin must be a positive integer in milliseconds.")
+        if (
+            isinstance(time_bin, (bool, np.bool_))
+            or not isinstance(time_bin, Real)
+            or not float(time_bin).is_integer()
+            or time_bin < 1
+        ):
+            raise ValueError("time_bin must be a positive whole number of milliseconds.")
         self._epoch_preparation = {
             "crop": crop_value,
             "time_bin": int(time_bin),
@@ -125,17 +140,28 @@ class EncodingPipeline:
         *,
         penalty: Mapping[str, float] | None = None,
     ) -> EncodingPipeline:
-        """Configure component and condition ridge penalties."""
+        """Configure component and condition ridge penalties.
 
-        values = {"component": 1.0, "condition": 0.1} if penalty is None else dict(penalty)
-        if set(values) != {"component", "condition"}:
-            raise ValueError("penalty must contain exactly 'component' and 'condition'.")
+        Omitted keys keep their defaults (component 1.0, condition 0.1). The
+        component penalty may be 0 (unpenalized). The condition penalty must be
+        positive because the condition one-hot block is collinear with the
+        intercept.
+        """
+
+        values = {"component": 1.0, "condition": 0.1}
+        supplied = {} if penalty is None else dict(penalty)
+        unknown = sorted(set(supplied).difference(values))
+        if unknown:
+            raise ValueError(f"penalty accepts only 'component' and 'condition'; got {unknown}.")
+        values.update(supplied)
         try:
             values = {name: float(value) for name, value in values.items()}
         except (TypeError, ValueError) as error:
             raise TypeError("penalty values must be numeric.") from error
-        if any(not np.isfinite(value) or value <= 0 for value in values.values()):
-            raise ValueError("component and condition penalties must be finite positive values.")
+        if not all(np.isfinite(value) for value in values.values()):
+            raise ValueError("penalties must be finite.")
+        if values["component"] < 0 or values["condition"] <= 0:
+            raise ValueError("component penalty must be >= 0 and condition penalty must be > 0.")
         self._model = {"penalty": values}
         return self
 
@@ -175,10 +201,8 @@ class EncodingPipeline:
             raise ValueError("target must be a non-empty post-transform metadata column.")
         if recompute not in {"never", "changed", "all"}:
             raise ValueError("recompute must be 'never', 'changed', or 'all'.")
-        if not isinstance(n_jobs, int) or n_jobs < 1:
-            raise ValueError("n_jobs must be a positive integer.")
-        if not isinstance(progress, bool):
-            raise TypeError("progress must be bool.")
+        n_jobs = resolve_n_jobs(n_jobs)
+        progress = bool(progress)
 
         condition_map, expression_map = validate_groups(conditions, expression)
         path = result_path(file)
@@ -200,7 +224,15 @@ class EncodingPipeline:
             "conditions": condition_map,
             "expression": expression_map,
         }
-        analysis_fingerprint = fingerprint(config)
+        analysis_fingerprint = settings_fingerprint(config)
+        if (
+            existing is not None
+            and existing["fingerprint"] != analysis_fingerprint
+            and settings_fingerprint(existing["config"]) == analysis_fingerprint
+        ):
+            # Same settings, written by another mveeg version or dataset location.
+            update_analysis_fingerprint(path, analysis_fingerprint)
+            existing["fingerprint"] = analysis_fingerprint
         reset = False
         if existing is not None and existing["fingerprint"] != analysis_fingerprint:
             if recompute != "all":
@@ -218,12 +250,20 @@ class EncodingPipeline:
             reset=reset,
         )
 
-        fingerprints = {
-            subject: _input_fingerprint(self, subject) for subject in self.subject_indices
-        }
         saved = subject_state(path)
+        if recompute != "never":
+            for subject in self._excluded_subjects:
+                if subject in saved:
+                    delete_subject(path, subject, subject_tables=SUBJECT_TABLES)
+        included_subjects = [
+            subject for subject in self.subject_indices if subject not in self._excluded_subjects
+        ]
+        if not included_subjects:
+            warnings.warn("All subjects are excluded; no subjects to analyze.", stacklevel=2)
+            return None
+        fingerprints = {subject: _input_fingerprint(self, subject) for subject in included_subjects}
         subjects = []
-        for subject in self.subject_indices:
+        for subject in included_subjects:
             status, previous = saved.get(subject, ("missing", None))
             changed = previous != fingerprints[subject]
             if recompute == "all" or status != "complete" or (recompute == "changed" and changed):
@@ -299,6 +339,8 @@ class EncodingPipeline:
 
     def _refresh_dataset(self) -> None:
         self._manifest = load_validated_manifest(self.dataset)
+        selection = read_subject_selection(self.dataset, self.subject_indices)
+        self._excluded_subjects = frozenset(selection["subject_index"])
         self.task = str(self._manifest["task"].iloc[0])
         self.stage = str(self._manifest["stage"].iloc[0])
         if self.stage not in {"prepared", "preprocessed"}:
