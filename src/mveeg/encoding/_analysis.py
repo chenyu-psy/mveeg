@@ -12,7 +12,7 @@ from sklearn.model_selection import StratifiedKFold
 from tqdm.auto import tqdm
 
 from ._metrics import compute_pattern_expression, estimate_channel_covariance, fit_ridge
-from ._prepare import EncodingDesign, build_design
+from ._prepare import EncodingDesign, build_design, check_component_identifiability
 
 
 @dataclass
@@ -90,6 +90,12 @@ def encode_subject(
                 training_rows[train_local],
                 np.concatenate([training_rows[test_local], expression_assignments[fold_index - 1]]),
             )
+        )
+
+    check_component_identifiability(design, training_rows, context="the training trials")
+    for fold, train_rows, _ in fold_specs:
+        check_component_identifiability(
+            design, train_rows, context=f"the training trials of fold {fold}"
         )
 
     generator = Parallel(

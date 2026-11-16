@@ -83,6 +83,52 @@ def select_trials(
     return selected, training_labels[mask], expression_labels[mask], rows
 
 
+def check_component_identifiability(
+    design: EncodingDesign,
+    rows: np.ndarray,
+    *,
+    context: str,
+) -> None:
+    """Reject aliased components, whose patterns the data cannot separate.
+
+    Only the intercept-plus-component block is checked. Its overlap with the
+    condition basis is intentional and handled by ridge. When components are
+    exactly dependent in the given trials, ridge still returns coefficients,
+    but how signal is split among the aliased terms is set by the penalties
+    rather than by the data, so their patterns and expression are not
+    interpretable.
+    """
+
+    block = design.matrix[rows, : 1 + len(design.components)]
+    names = design.predictors["predictor"].tolist()[: block.shape[1]]
+    if np.linalg.matrix_rank(block) == block.shape[1]:
+        return
+    relations = []
+    independent: list[int] = []
+    for column in range(block.shape[1]):
+        candidate = [*independent, column]
+        if np.linalg.matrix_rank(block[:, candidate]) == len(candidate):
+            independent = candidate
+            continue
+        weights = np.linalg.lstsq(block[:, independent], block[:, column], rcond=None)[0]
+        terms = []
+        for index, weight in zip(independent, weights, strict=True):
+            if abs(weight) < 1e-8:
+                continue
+            magnitude = "" if np.isclose(abs(weight), 1.0) else f"{abs(weight):.3g}*"
+            sign = "-" if weight < 0 else "+"
+            terms.append((weight < 0, f"{sign} {magnitude}{names[index]}"))
+        # Positive terms first, so relations read like "c = a + b - intercept".
+        terms.sort(key=lambda term: term[0])
+        right = " ".join(text for _, text in terms).removeprefix("+ ") if terms else "0"
+        relations.append(f"{names[column]} = {right}")
+    raise ValueError(
+        f"Formula components are aliased in {context}: " + "; ".join(relations) + ". "
+        "These patterns cannot be separated by the data. Remove or recode one of the "
+        "terms in each relation."
+    )
+
+
 def build_design(
     metadata: pd.DataFrame,
     *,
