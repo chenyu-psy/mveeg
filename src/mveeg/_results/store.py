@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -271,4 +271,4 @@ def require_trial_prefix(frame: pd.DataFrame, prefix: tuple[str, ...]) -> None:
 def now() -> str:
     """Return the current UTC timestamp."""
 
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()

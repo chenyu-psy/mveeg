@@ -27,7 +27,7 @@ Install the latest stable version from the GitHub repository's default branch:
 python -m pip install git+https://github.com/chenyu-psy/mveeg.git
 ```
 
-This installation requires Git. Python 3.10 or newer is required. Runtime
+This installation requires Git. Python 3.11 or newer is required. Runtime
 dependencies, including MNE 1.12 or newer, are installed automatically.
 
 Check the installed version:
