@@ -70,12 +70,60 @@ def test_formula_rejects_historical_or_unsupported_syntax(formula, message):
         parse_formula(formula, allowed_predictors={"a", "condition"})
 
 
-def test_component_exact_alias_is_handled_by_ridge():
+def _encode_codes(metadata, labels, formula, *, folds=2):
+    rng = np.random.default_rng(0)
+    conditions = list(dict.fromkeys(labels))
+    return encode_subject(
+        subject="001",
+        data=rng.normal(size=(len(metadata), 2, 1)),
+        metadata=metadata,
+        training_labels=labels,
+        expression_labels=labels,
+        trial_ids=np.arange(len(metadata)),
+        times=np.array([25]),
+        condition_order=conditions,
+        formula=formula,
+        penalty={"component": 1.0, "condition": 0.1},
+        folds=folds,
+        seed=1,
+        progress=False,
+    )
+
+
+def test_duplicate_components_are_rejected_with_their_relation():
     metadata = pd.DataFrame({"a": [0.0, 1.0] * 4, "duplicate": [0.0, 1.0] * 4})
+    labels = np.array(["A", "B"] * 4, dtype=object)
+    with pytest.raises(ValueError, match=r"aliased in the training trials: duplicate = a\."):
+        _encode_codes(metadata, labels, "1 + a + duplicate")
+
+
+def test_components_aliased_with_the_intercept_are_rejected():
+    # Every condition shows color, number, or both, so there is no "neither"
+    # condition and color + number - both is the intercept.
+    codes = {"C": (1.0, 0.0, 0.0), "N": (0.0, 1.0, 0.0), "CN": (1.0, 1.0, 1.0)}
+    labels = np.array(list(codes) * 4, dtype=object)
+    metadata = pd.DataFrame(
+        [dict(zip(["color", "number", "both"], codes[label], strict=True)) for label in labels]
+    )
+    with pytest.raises(ValueError, match=r"both = color \+ number - intercept\."):
+        _encode_codes(metadata, labels, "1 + color + number + both")
+    _encode_codes(metadata, labels, "1 + color + number")
+
+
+def test_component_aliased_only_within_a_training_fold_is_rejected():
+    # x is nonzero in a single trial; the fold that holds it out trains on x == 0.
+    labels = np.array(["A", "B"] * 4, dtype=object)
+    metadata = pd.DataFrame({"a": [0.0, 1.0] * 4, "x": [0.0] * 7 + [1.0]})
+    with pytest.raises(ValueError, match=r"training trials of fold \d+: x = 0\."):
+        _encode_codes(metadata, labels, "1 + a + x")
+
+
+def test_ridge_solves_designs_with_condition_overlap():
+    metadata = pd.DataFrame({"a": [0.0, 1.0] * 4})
     labels = np.array(["A", "B"] * 4, dtype=object)
     design = build_design(
         metadata,
-        formula="1 + a + duplicate",
+        formula="1 + a",
         training_labels=labels,
         condition_order=["A", "B"],
         penalty={"component": 1.0, "condition": 0.1},

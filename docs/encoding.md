@@ -91,9 +91,15 @@ values that never enter fitting. `expression=None` copies `conditions`.
 
 The condition keys define the complete one-hot condition basis. Exact overlap
 between component and condition spaces is intentional and handled by ridge.
-Exact dependency among the theoretical component columns is handled by the
-same positive ridge penalties. Component and full-model rank deficiency remain
-visible in `design_diagnostics` rather than blocking estimation.
+The theoretical components themselves, together with the intercept, must be
+linearly independent in the training trials of every subject and every fold.
+If they are aliased, the data cannot separate their patterns: ridge would still
+return coefficients, but the split among the aliased terms would be set by the
+penalties. `encode()` therefore stops with an error that names each relation,
+for example `interaction = color + number - intercept` when every condition
+contains color, number, or both. Remove or recode one term in each relation.
+Near-dependence is not an error; the component condition number in
+`design_diagnostics` records it.
 
 ## Cross-validation, covariance, and expression
 

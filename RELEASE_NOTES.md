@@ -1,3 +1,16 @@
+# Unreleased
+
+## Changed
+
+- Encoding now stops with an error when formula components are aliased with
+  each other or with the intercept in a subject's training trials or in any
+  training fold. The message names each relation, such as
+  `interaction = color + number - intercept`. Earlier releases fitted these
+  designs and only recorded the rank deficiency in `design_diagnostics`, but the
+  patterns of aliased components were set by the ridge penalties rather than by
+  the data. Formulas without aliased components give the same results and
+  fingerprints as before.
+
 # mveeg 0.4.0
 
 mveeg 0.4.0 adds dataset-level subject exclusions, accepts many inputs that
