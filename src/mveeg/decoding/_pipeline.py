@@ -6,12 +6,14 @@ import secrets
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from importlib.metadata import version
+from numbers import Real
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from .._analysis.epochs import average_time_bins, build_time_bins, channels_to_drop
+from .._analysis.jobs import resolve_n_jobs
 from .._analysis.topography import build_topography_coord_table
 from .._dataset.manifest import (
     load_subject_epochs_and_metadata,
@@ -21,8 +23,9 @@ from .._dataset.manifest import (
 )
 from .._dataset.metadata import assign_metadata_variables, validate_metadata_variables
 from .._dataset.selection import read_subject_selection
-from .._provenance import fingerprint, fingerprint_files
-from .._results.store import delete_subject
+from .._provenance import fingerprint, fingerprint_files, settings_fingerprint
+from .._results.store import delete_subject, update_analysis_fingerprint
+from .._values import is_value_list, value_list
 from ._analysis import SubjectDecoding, decode_subject
 from ._models import classifier_settings
 from ._prepare import (
@@ -102,12 +105,12 @@ class DecodingPipeline:
         for column, rule in (exclude or {}).items():
             if not isinstance(column, str) or column.strip() == "":
                 raise ValueError("exclude keys must be non-empty metadata column names.")
-            if rule == "notna":
+            if isinstance(rule, str) and rule == "notna":
                 normalized_exclude[column] = "notna"
-            elif isinstance(rule, (str, bytes)) or not isinstance(rule, Sequence):
-                raise TypeError("exclude rules must be sequences or 'notna'.")
+            elif not is_value_list(rule):
+                raise TypeError("exclude rules must be lists or arrays of values, or 'notna'.")
             else:
-                normalized_exclude[column] = tuple(rule)
+                normalized_exclude[column] = tuple(value_list(rule))
         self._trial_selection = {
             "qc": qc,
             "keep": list(keep),
@@ -118,21 +121,30 @@ class DecodingPipeline:
     def prepare_epochs(
         self,
         *,
-        crop: tuple[float, float] | None = (0.0, 0.8),
-        time_bin: int = 50,
+        crop: tuple[float | None, float | None] | None = (0.0, 0.8),
+        time_bin: float = 50,
         drop_channel_types: Sequence[str] = ("eog", "eyegaze", "pupil", "misc"),
         drop_channels: Sequence[str] = (),
     ) -> DecodingPipeline:
         """Register epoch cropping, time bins, and analysis channels."""
 
         if crop is not None:
-            if len(crop) != 2 or not np.all(np.isfinite(crop)) or crop[0] >= crop[1]:
+            if len(crop) != 2:
+                raise ValueError("crop must contain start/end times in seconds.")
+            # None keeps the epoch's own start or end, as in mne.Epochs.crop.
+            crop_value = [None if bound is None else float(bound) for bound in crop]
+            bounds = [bound for bound in crop_value if bound is not None]
+            if not np.all(np.isfinite(bounds)) or (len(bounds) == 2 and bounds[0] >= bounds[1]):
                 raise ValueError("crop must contain finite increasing start/end times in seconds.")
-            crop_value = [float(crop[0]), float(crop[1])]
         else:
             crop_value = None
-        if not isinstance(time_bin, (int, np.integer)) or int(time_bin) < 1:
-            raise ValueError("time_bin must be a positive integer in milliseconds.")
+        if (
+            isinstance(time_bin, (bool, np.bool_))
+            or not isinstance(time_bin, Real)
+            or not float(time_bin).is_integer()
+            or time_bin < 1
+        ):
+            raise ValueError("time_bin must be a positive whole number of milliseconds.")
         self._epoch_preparation = {
             "crop": crop_value,
             "time_bin": int(time_bin),
@@ -206,10 +218,8 @@ class DecodingPipeline:
             raise ValueError("output must be 'mean' or 'all'.")
         if recompute not in {"never", "changed", "all"}:
             raise ValueError("recompute must be 'never', 'changed', or 'all'.")
-        if not isinstance(n_jobs, int) or n_jobs < 1:
-            raise ValueError("n_jobs must be a positive integer.")
-        if not isinstance(progress, bool):
-            raise TypeError("progress must be bool.")
+        n_jobs = resolve_n_jobs(n_jobs)
+        progress = bool(progress)
         stored_metadata = _normalize_store_metadata(store_metadata)
         class_map, evidence_map = validate_groups(classes, evidence)
         generalization_map = validate_generalization(class_map, generalization)
@@ -257,7 +267,15 @@ class DecodingPipeline:
         }
         if stored_metadata is not None:
             config["store_metadata"] = stored_metadata
-        analysis_fingerprint = fingerprint(config)
+        analysis_fingerprint = settings_fingerprint(config)
+        if (
+            existing is not None
+            and existing["fingerprint"] != analysis_fingerprint
+            and settings_fingerprint(existing["config"]) == analysis_fingerprint
+        ):
+            # Same settings, written by another mveeg version or dataset location.
+            update_analysis_fingerprint(path, analysis_fingerprint)
+            existing["fingerprint"] = analysis_fingerprint
         if existing is not None and existing["fingerprint"] != analysis_fingerprint:
             if recompute != "all":
                 raise ValueError(
@@ -475,9 +493,9 @@ def _normalize_store_metadata(store_metadata: Sequence[str] | None) -> list[str]
 
     if store_metadata is None:
         return None
-    if isinstance(store_metadata, (str, bytes)) or not isinstance(store_metadata, Sequence):
+    if not is_value_list(store_metadata):
         raise TypeError("store_metadata must be a sequence of column names or None.")
-    columns = list(store_metadata)
+    columns = value_list(store_metadata)
     if any(not isinstance(column, str) or not column.strip() for column in columns):
         raise ValueError("store_metadata column names must be non-empty strings.")
     folded = [column.casefold() for column in columns]

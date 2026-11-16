@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .._analysis.trials import base_trial_mask, drop_redundant_subject_alias, map_values
+from .._values import is_value_list, value_list
 
 DEFAULT_DROP_TYPES = ("eog", "eyegaze", "pupil", "misc")
 RESERVED_TRIAL_COLUMNS = {"class", "evidence_group"}
@@ -150,9 +151,9 @@ def _validate_mapping(
     for label, raw_values in mapping.items():
         if not isinstance(label, str) or label.strip() == "":
             raise ValueError(f"{name} labels must be non-empty strings.")
-        if isinstance(raw_values, (str, bytes)) or not isinstance(raw_values, Sequence):
-            raise TypeError(f"{name}[{label!r}] must be a non-string sequence.")
-        values = list(raw_values)
+        if not is_value_list(raw_values):
+            raise TypeError(f"{name}[{label!r}] must be a list or array of values.")
+        values = value_list(raw_values)
         if not values:
             raise ValueError(f"{name}[{label!r}] cannot be empty.")
         overlap = [

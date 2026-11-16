@@ -12,6 +12,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from tqdm.auto import tqdm
 
+from .._analysis.jobs import resolve_n_jobs
 from ._aggregation import combine_all, combine_mean, summarize_repeat
 from ._models import (
     haufe_patterns,
@@ -67,10 +68,8 @@ def decode_subject(
 ) -> SubjectDecoding:
     """Decode one subject and return rows at the requested CV granularity."""
 
-    if not isinstance(n_jobs, int) or n_jobs < 1:
-        raise ValueError("n_jobs must be a positive integer.")
-    if not isinstance(progress, bool):
-        raise TypeError("progress must be bool.")
+    n_jobs = resolve_n_jobs(n_jobs)
+    progress = bool(progress)
     labels = np.asarray(class_labels, dtype=object)
     evidence = np.asarray(evidence_labels, dtype=object)
     generalization = np.asarray(generalization_labels, dtype=object)

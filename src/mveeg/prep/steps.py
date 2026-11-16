@@ -309,7 +309,11 @@ def merge_metadata(
     epoch_key: str | None = None,
     metadata_key: str | None = None,
 ) -> mne.Epochs:
-    """Merge an external metadata table by strict row order or unique keys."""
+    """Merge an external metadata table by strict row order or unique keys.
+
+    With keys, every epoch must have a metadata row; metadata rows without a
+    matching epoch are ignored.
+    """
     if (epoch_key is None) != (metadata_key is None):
         raise ValueError("epoch_key and metadata_key must be provided together.")
     base = _metadata(epochs)
@@ -340,10 +344,11 @@ def merge_metadata(
             raise ValueError("Metadata merge keys must be unique on both sides.")
         base_keys = pd.Index(base[epoch_key])
         incoming_keys = pd.Index(incoming[metadata_key])
-        if set(base_keys) != set(incoming_keys):
-            missing = list(base_keys.difference(incoming_keys))
-            extra = list(incoming_keys.difference(base_keys))
-            raise ValueError(f"Metadata merge keys differ; missing={missing}, extra={extra}.")
+        # Extra metadata rows (practice trials, trials dropped before epoching)
+        # have no epoch and are ignored; every epoch still needs a row.
+        missing = list(base_keys.difference(incoming_keys))
+        if missing:
+            raise ValueError(f"External metadata has no row for epoch keys: {missing}.")
         additions = incoming.set_index(metadata_key).loc[base_keys].reset_index()
         if epoch_key == metadata_key:
             additions = additions.drop(columns=[metadata_key])

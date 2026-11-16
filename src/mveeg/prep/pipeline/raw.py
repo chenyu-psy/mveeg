@@ -104,7 +104,11 @@ class RawPipeline:
         include: Mapping[str, object] | None = None,
         sep: str | None = None,
     ) -> RawPipeline:
-        """Register behavior loading and its required pre-alignment row filter."""
+        """Register behavior loading and its required pre-alignment row filter.
+
+        If ``pattern`` matches several files, they are stacked in sorted order,
+        matching how EEG files are concatenated.
+        """
         if self._behavior_loader is not None:
             raise RuntimeError("load_behavior can only be registered once.")
         self._behavior_loader = {
@@ -445,18 +449,27 @@ class RawPipeline:
         return raws[0] if len(raws) == 1 else mne.concatenate_raws(raws, verbose="ERROR")
 
     def _load_behavior(self, subject_dir: Path) -> pd.DataFrame:
-        """Load exactly one behavior table and apply its registered pre-filter."""
+        """Load matched behavior tables in sorted order and apply the pre-filter.
+
+        Several matches (for example one CSV per block) are stacked in the
+        same sorted order used to concatenate EEG files.
+        """
         assert self._behavior_loader is not None
         paths = _matched_files(subject_dir, str(self._behavior_loader["pattern"]))
-        if len(paths) != 1:
-            raise ValueError(
-                f"Behavior pattern must match exactly one file in {subject_dir}, "
-                f"found {len(paths)}."
-            )
-        sep = self._behavior_loader["sep"]
-        if sep is None:
-            sep = "\t" if paths[0].suffix.lower() == ".tsv" else ","
-        table = pd.read_csv(paths[0], sep=sep)
+        tables = []
+        for path in paths:
+            sep = self._behavior_loader["sep"]
+            if sep is None:
+                sep = "\t" if path.suffix.lower() == ".tsv" else ","
+            tables.append(pd.read_csv(path, sep=sep))
+        columns = list(tables[0].columns)
+        for path, table in zip(paths[1:], tables[1:], strict=True):
+            if list(table.columns) != columns:
+                raise ValueError(
+                    f"Behavior files in {subject_dir} have different columns: "
+                    f"{paths[0].name} and {path.name}."
+                )
+        table = tables[0] if len(tables) == 1 else pd.concat(tables, ignore_index=True)
         return steps.filter_table(table, include=self._behavior_loader["include"])
 
     def _input_paths(self, subject_dir: Path) -> list[Path]:

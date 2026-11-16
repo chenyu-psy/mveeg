@@ -258,10 +258,23 @@ def test_pipeline_is_lazy_chained_and_validates_model_settings(tmp_path, monkeyp
     assert pipeline.setup_cv() is pipeline
     with pytest.raises(TypeError):
         init_pipeline(open_pipeline(dataset))
-    with pytest.raises(ValueError, match="exactly"):
-        pipeline.setup_model(penalty={"component": 1.0})
-    with pytest.raises(ValueError, match="positive"):
-        pipeline.setup_model(penalty={"component": 0.0, "condition": 0.1})
+    assert pipeline.setup_model(penalty={"component": 10}) is pipeline
+    assert pipeline._model["penalty"] == {"component": 10.0, "condition": 0.1}
+    assert pipeline.setup_model(penalty={"component": 0.0}) is pipeline
+    with pytest.raises(ValueError, match="accepts only"):
+        pipeline.setup_model(penalty={"components": 1.0})
+    with pytest.raises(ValueError, match="condition penalty must be > 0"):
+        pipeline.setup_model(penalty={"condition": 0.0})
+    with pytest.raises(ValueError, match="component penalty must be >= 0"):
+        pipeline.setup_model(penalty={"component": -1.0})
+    assert pipeline.prepare_epochs(crop=(None, 0.5), time_bin=50.0) is pipeline
+    assert pipeline._epoch_preparation["crop"] == [None, 0.5]
+    assert pipeline._epoch_preparation["time_bin"] == 50
+    for invalid in (12.5, True, 0):
+        with pytest.raises(ValueError, match="whole number of milliseconds"):
+            pipeline.prepare_epochs(time_bin=invalid)
+    with pytest.raises(ValueError, match="finite increasing"):
+        pipeline.prepare_epochs(crop=(0.5, 0.1))
 
 
 def test_pipeline_writes_public_duckdb_and_condition_view(tmp_path):
@@ -667,6 +680,6 @@ def test_invalid_subject_selection_does_not_change_results(exclusion_analysis):
     (selection.root / "subject_selection.tsv").write_text(
         "subject_index\treason\n999\tunknown\n", encoding="utf-8"
     )
-    with pytest.raises(ValueError, match="unknown"):
+    with pytest.warns(UserWarning, match="not in the dataset"):
         pipeline.encode(**arguments)
     assert subject_state(arguments["file"]) == before

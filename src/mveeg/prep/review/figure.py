@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping, Sequence
 
 import numpy as np
@@ -59,7 +60,12 @@ class MatplotlibReviewBrowser:
         hidden = {str(channel) for channel in hide_channels}
         unknown = sorted(hidden.difference(epochs.ch_names))
         if unknown:
-            raise ValueError(f"hide_channels contains unknown channels: {unknown}.")
+            # A study-wide list may name channels this subject does not have.
+            warnings.warn(
+                f"hide_channels names channels not in these epochs; ignoring {unknown}.",
+                UserWarning,
+                stacklevel=2,
+            )
         self.picks = [
             index for index, channel in enumerate(epochs.ch_names) if channel not in hidden
         ]

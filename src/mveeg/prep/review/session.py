@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from numbers import Integral
 from pathlib import Path
 
 import numpy as np
@@ -60,8 +61,9 @@ class ReviewSession:
         """Initialize an isolated in-memory review session."""
         if (group_by is None) != (label is None):
             raise ValueError("group_by and label must be supplied together or both omitted.")
-        if not isinstance(window_size, int) or isinstance(window_size, bool) or window_size < 1:
+        if not _is_integer(window_size) or window_size < 1:
             raise ValueError("window_size must be a positive integer.")
+        window_size = int(window_size)
         if artifact_path is not None and on_commit is not None:
             raise ValueError("Configure either artifact_path or on_commit, not both.")
 
@@ -150,13 +152,10 @@ class ReviewSession:
 
         artifact_keys = pd.MultiIndex.from_frame(self._artifacts.loc[:, list(KEY_COLUMNS)])
         metadata_keys = pd.MultiIndex.from_frame(keyed.loc[:, list(KEY_COLUMNS)])
+        # Metadata rows for epochs outside the artifact table are ignored.
         missing_keys = artifact_keys.difference(metadata_keys).tolist()
-        extra_keys = metadata_keys.difference(artifact_keys).tolist()
-        if missing_keys or extra_keys:
-            raise ValueError(
-                "metadata keys must match artifact keys exactly for the subject; "
-                f"missing={missing_keys}, extra={extra_keys}."
-            )
+        if missing_keys:
+            raise ValueError(f"metadata have no row for artifact keys: {missing_keys}.")
         return (
             keyed.set_index(list(KEY_COLUMNS))[self.group_by]
             .reindex(artifact_keys)
@@ -271,14 +270,11 @@ class ReviewSession:
         else:
             start = self.current_index if window_start is None else window_start
             size = self.window_size if window_size is None else window_size
-            if (
-                not isinstance(start, int)
-                or isinstance(start, bool)
-                or not 0 <= start < len(target_epochs)
-            ):
+            if not _is_integer(start) or not 0 <= start < len(target_epochs):
                 raise ValueError("window_start is outside the selected group.")
-            if not isinstance(size, int) or isinstance(size, bool) or size < 1:
+            if not _is_integer(size) or size < 1:
                 raise ValueError("window_size must be a positive integer.")
+            start, size = int(start), int(size)
             self.current_index = start
             epoch_indices = list(target_epochs[start : start + size])
 
@@ -346,3 +342,8 @@ class ReviewSession:
         """Close without writing, leaving uncommitted edits discarded."""
         self._closed = True
         self._pending.clear()
+
+
+def _is_integer(value: object) -> bool:
+    """Return whether value is an integer (including NumPy integers) but not a bool."""
+    return isinstance(value, Integral) and not isinstance(value, (bool, np.bool_))
