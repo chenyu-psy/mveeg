@@ -374,10 +374,8 @@ def test_autoreject_exclude_channels_validates_configuration():
         apply_autoreject(epochs, eligible, {"ignore_channels": ["E0"]})
     with pytest.raises(TypeError, match="sequence of channel names"):
         apply_autoreject(epochs, eligible, {"exclude_channels": "E0"})
-    with pytest.raises(ValueError, match="duplicate"):
-        apply_autoreject(epochs, eligible, {"exclude_channels": ["E0", "E0"]})
-    with pytest.raises(ValueError, match="unknown channel"):
-        apply_autoreject(epochs, eligible, {"exclude_channels": ["missing"]})
+    with pytest.raises(ValueError, match="thresh_method"):
+        apply_autoreject(epochs, eligible, {"thresh_method": "grid"})
     with pytest.raises(ValueError, match="leaves no EEG channels"):
         apply_autoreject(
             epochs,
@@ -395,8 +393,8 @@ def test_autoreject_exclude_channels_validates_configuration():
         )
 
 
-def test_autoreject_missing_consensus_warns_and_uses_default_grid(monkeypatch):
-    """Legacy configs remain valid but make their implicit grid visible."""
+def test_autoreject_missing_consensus_uses_default_grid(monkeypatch):
+    """Configs without consensus use and record AutoReject's default grid."""
 
     class FakeAutoReject:
         """Expose the default consensus grid used by AutoReject."""
@@ -420,7 +418,8 @@ def test_autoreject_missing_consensus_warns_and_uses_default_grid(monkeypatch):
 
     monkeypatch.setattr("mveeg.prep.quality.autoreject.AutoReject", FakeAutoReject)
     epochs = _epochs()
-    with pytest.warns(UserWarning, match="consensus is not set"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         result = apply_autoreject(
             epochs,
             np.ones(len(epochs), dtype=bool),
@@ -1112,3 +1111,40 @@ def test_review_gaze_rule_labels_deviation_after_autoreject():
 
     assert result.epoch_review.tolist() == [False, True, False]
     assert "moderate_gaze_deviation" in result.review_reasons[1, 1]
+
+
+def test_autoreject_study_wide_channel_lists_and_thresh_method(monkeypatch):
+    """Array-like, duplicated, or absent excluded channels are tolerated."""
+
+    seen = {}
+
+    class FakeAutoReject:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+            self.consensus = np.linspace(0, 1, 11)
+            self.n_interpolate = kwargs["n_interpolate"]
+            self.random_state = kwargs["random_state"]
+            self.n_jobs = kwargs["n_jobs"]
+
+        def fit_transform(self, epochs, *, return_log):
+            self.consensus_ = {"eeg": 0.1}
+            self.n_interpolate_ = {"eeg": 1}
+            self.threshes_ = {channel: 100e-6 for channel in epochs.ch_names}
+            self.loss_ = {"eeg": np.zeros((11, 1, 2))}
+            return epochs.copy(), SimpleNamespace(
+                bad_epochs=np.zeros(len(epochs), dtype=bool),
+                labels=np.zeros((len(epochs), len(epochs.ch_names))),
+            )
+
+    monkeypatch.setattr("mveeg.prep.quality.autoreject.AutoReject", FakeAutoReject)
+    epochs = _epochs()
+    config = {
+        "n_interpolate": 1,
+        "cv": 2,
+        "thresh_method": "random_search",
+        "exclude_channels": np.array(["E0", "E0", "missing"]),
+    }
+    with pytest.warns(UserWarning, match="ignoring \\['missing'\\]"):
+        apply_autoreject(epochs, np.ones(len(epochs), dtype=bool), config)
+    assert seen["thresh_method"] == "random_search"
+    assert "E0" not in seen["picks"]

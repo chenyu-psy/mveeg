@@ -625,3 +625,24 @@ def test_schema_has_no_unrequested_review_audit_fields():
         "epoch_reasons",
         "reviewed",
     )
+
+
+def test_review_accepts_numpy_integers_and_unknown_ignored_channels():
+    """NumPy integer windows and absent study-wide ignored channels are tolerated."""
+    session = ReviewSession(
+        _all_review_table(4), subject_index="4001", window_size=np.int64(2), on_commit=list
+    )
+    shown = session.mark_displayed(window_start=np.int64(1), window_size=np.int64(2))
+    assert shown["epoch_index"].tolist() == [1, 2]
+    with pytest.raises(ValueError, match="window_size"):
+        ReviewSession(_all_review_table(2), subject_index="4001", window_size=True)
+    with pytest.warns(UserWarning, match=r"ignoring \['T7'\]"):
+        table = build_artifact_table(
+            "4001",
+            range(2),
+            ["Cz"],
+            epoch_review=np.ones(2, dtype=bool),
+            epoch_reasons={"large_p2p": np.ones(2, dtype=bool)},
+            ignore_channels=["T7"],
+        )
+    assert len(table) == 2

@@ -10,6 +10,7 @@ from mveeg._results.store import (
     insert_frame,
     mark_failed,
     mark_pending,
+    normalize_result_path,
     require_columns,
     require_equal_frame,
     subject_state,
@@ -145,3 +146,13 @@ def test_settings_fingerprint_ignores_version_and_dataset_root():
     assert settings_fingerprint(config) == settings_fingerprint(moved)
     assert settings_fingerprint(json.dumps(config)) == settings_fingerprint(moved)
     assert settings_fingerprint(config) != settings_fingerprint({**moved, "cv": 10})
+
+
+def test_result_path_appends_duckdb_suffix(tmp_path):
+    assert normalize_result_path(tmp_path / "load", analysis="decoding").name == "load.duckdb"
+    assert normalize_result_path(tmp_path / "load_tmin-0.2", analysis="decoding").name == (
+        "load_tmin-0.2.duckdb"
+    )
+    assert normalize_result_path(tmp_path / "load.duckdb", analysis="decoding").name == (
+        "load.duckdb"
+    )

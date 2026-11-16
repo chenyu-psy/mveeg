@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Integral, Real
@@ -9,6 +10,7 @@ from numbers import Integral, Real
 import mne
 import numpy as np
 
+from ..._values import is_value_list
 from .eligibility import (
     EligibilityResult,
     _absolute_mask,
@@ -65,8 +67,7 @@ def _validate_high_frequency_config(
 
     band = config["band"]
     if (
-        not isinstance(band, Sequence)
-        or isinstance(band, (str, bytes))
+        not is_value_list(band)
         or len(band) != 2
         or any(isinstance(value, (bool, np.bool_)) or not isinstance(value, Real) for value in band)
     ):
@@ -229,7 +230,13 @@ def label_artifact_rules(
 
     unknown_ignored = sorted(set(ignore_channels).difference(epochs.ch_names))
     if unknown_ignored:
-        raise ValueError(f"ignore_channels contains unknown channels: {unknown_ignored}.")
+        # A study-wide list may name channels this subject does not have.
+        warnings.warn(
+            f"ignore_channels names channels not in these epochs; ignoring {unknown_ignored}.",
+            UserWarning,
+            stacklevel=2,
+        )
+        ignore_channels = [channel for channel in ignore_channels if channel in epochs.ch_names]
     _reject_embedded_gaze_geometry(reject_config, "reject")
     _reject_embedded_gaze_geometry(review_config, "review")
     if "gaze" in reject_config:

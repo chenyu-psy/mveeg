@@ -10,13 +10,12 @@ import pandas as pd
 
 
 def normalize_result_path(file: str | Path, *, analysis: str) -> Path:
-    """Normalize a caller-provided DuckDB result path."""
+    """Normalize a caller-provided DuckDB result path, appending ``.duckdb`` if needed."""
 
     path = Path(file).expanduser()
-    if path.suffix == "":
-        path = path.with_suffix(".duckdb")
     if path.suffix != ".duckdb":
-        raise ValueError(f"{analysis.capitalize()} results must use the .duckdb suffix.")
+        # Append rather than replace, so names like "load_tmin-0.2" keep their dots.
+        path = path.with_name(path.name + ".duckdb")
     return path.resolve()
 
 

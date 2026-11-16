@@ -69,8 +69,7 @@ def decode_subject(
     """Decode one subject and return rows at the requested CV granularity."""
 
     n_jobs = resolve_n_jobs(n_jobs)
-    if not isinstance(progress, bool):
-        raise TypeError("progress must be bool.")
+    progress = bool(progress)
     labels = np.asarray(class_labels, dtype=object)
     evidence = np.asarray(evidence_labels, dtype=object)
     generalization = np.asarray(generalization_labels, dtype=object)
