@@ -37,12 +37,19 @@ prepared = pipeline.build_epochs(
 `mne.io.read_raw()` dispatcher. It has no custom reader hook. Project-specific
 formats should be read by project code and passed through the external pipeline.
 
-`load_eyelink()` discovers ASC and EDF files. mveeg reads binocular samples and
-message markers directly because MNE's current EyeLink reader misclassifies some
+`load_eyelink()` discovers ASC and EDF files. mveeg reads gaze and pupil samples
+and message markers directly because MNE's current EyeLink reader misclassifies some
 signed samples as status columns. EDF files without an ASC counterpart require
 the SR Research `edf2asc` executable. The stable mveeg reader entry point keeps
 the backend internal so a validated future MNE release can replace it without
-changing preprocessing pipelines.
+changing preprocessing pipelines. The recorded eyes come from each file's
+`SAMPLES` header: binocular files give `*_left` and `*_right` channels, while
+monocular files give channels for the recorded eye only. Extra sample columns
+such as velocity or resolution are ignored.
+
+`load_behavior()` may match several files, for example one CSV per block. They
+are stacked in sorted file order, the same order used to concatenate EEG files,
+and must share the same columns.
 
 Without `trial_sequences`, every matching `event_id` event starts one epoch.
 With sequences, the mapping value defines the required ordered event codes and

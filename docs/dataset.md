@@ -81,8 +81,10 @@ cohort-level rebuild must cover every existing subject in that root.
 ## Provenance
 
 Fingerprints accept only stable JSON-like values, `pathlib.Path`, and NumPy
-arrays/scalars. Callables, sets, arbitrary objects, non-string mapping keys,
-and non-finite numbers are rejected; there is no `repr()` fallback.
+arrays/scalars. Missing values (NaN, `pd.NA`, `pd.NaT`) are stored as `null`,
+infinities as `"inf"`/`"-inf"`, and integer mapping keys as strings, so
+metadata with missing trial values can be fingerprinted. Callables, sets, and
+arbitrary objects are rejected; there is no `repr()` fallback.
 
 The package version has one source of truth, `pyproject.toml`. Dataset schema
 changes only when the stored format becomes incompatible; it does not track
@@ -94,8 +96,10 @@ ordinary package releases.
 replaces `subject_selection.tsv`. Its ordered columns are `subject_index`
 (string) and `reason` (string), with one row per excluded subject. The file
 uses UTF-8 TSV with standard quoting. An absent, zero-length, or header-only
-file excludes nobody. Invalid columns, malformed rows, duplicate normalized
-indices, and indices absent from the manifest are rejected by model readers.
+file excludes nobody. Invalid columns, malformed rows, and duplicate
+normalized indices are rejected by model readers. Indices absent from the
+manifest (for example a subject later removed from the dataset) are ignored
+with a warning.
 
 Selection is independent of dataset schema 2's manifest and signal files.
 `subject_indices` continues to enumerate every manifest subject, and excluded

@@ -39,7 +39,10 @@ Set `autoreject=None` to skip AutoReject. Otherwise AutoReject is fit only on
 eligible EEG data. `autoreject.exclude_channels` keeps named channels in the
 saved epochs while excluding them from threshold fitting, cross-validation,
 voting, and interpolation. Channels in `epochs.info["bads"]` follow the same
-model-exclusion behavior. Excluded-channel labels are stored as `-1`.
+model-exclusion behavior. Excluded-channel labels are stored as `-1`. A
+study-wide list may name channels that a subject lacks; those names are
+ignored with a warning. When `consensus` is omitted, AutoReject's default
+candidate grid is used and saved in the diagnostics.
 
 ## Artifact rules
 
@@ -68,6 +71,9 @@ preprocessed.label_artifacts(
 
 preprocessed.artifact_counts(status="initial_status")
 ```
+
+`ignore_channels` (and `hide_channels` during review) may also be study-wide:
+channels a subject lacks are ignored with a warning.
 
 Use `recompute="changed"` to reuse complete sidecars when the rules are
 unchanged, `"all"` to force relabeling, or `"never"` to preserve existing
@@ -134,7 +140,9 @@ preprocessed.select_subjects(
 complete exclusion list**; keep all exclusions in the mapping, or use
 `exclude={}` to restore everyone. Reasons are strings; an empty reason is
 allowed. Subject indices follow the usual normalization rules, and duplicate
-normalized or unknown indices are rejected before the saved list changes.
+normalized or unknown indices are rejected before the saved list changes. If a
+subject later leaves the dataset, model runs ignore its saved exclusion with a
+warning.
 
 Exclusions are persisted in `subject_selection.tsv` in this dataset root.
 They survive reopening, artifact relabeling, and preprocessing reruns into the
