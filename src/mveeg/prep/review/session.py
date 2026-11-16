@@ -150,13 +150,10 @@ class ReviewSession:
 
         artifact_keys = pd.MultiIndex.from_frame(self._artifacts.loc[:, list(KEY_COLUMNS)])
         metadata_keys = pd.MultiIndex.from_frame(keyed.loc[:, list(KEY_COLUMNS)])
+        # Metadata rows for epochs outside the artifact table are ignored.
         missing_keys = artifact_keys.difference(metadata_keys).tolist()
-        extra_keys = metadata_keys.difference(artifact_keys).tolist()
-        if missing_keys or extra_keys:
-            raise ValueError(
-                "metadata keys must match artifact keys exactly for the subject; "
-                f"missing={missing_keys}, extra={extra_keys}."
-            )
+        if missing_keys:
+            raise ValueError(f"metadata have no row for artifact keys: {missing_keys}.")
         return (
             keyed.set_index(list(KEY_COLUMNS))[self.group_by]
             .reindex(artifact_keys)

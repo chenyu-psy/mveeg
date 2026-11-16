@@ -11,6 +11,7 @@ from mveeg._results.store import (
     mark_failed,
     mark_pending,
     require_columns,
+    require_equal_frame,
     subject_state,
 )
 
@@ -118,3 +119,29 @@ def test_subject_deletion_is_atomic_and_keeps_other_subjects(tmp_path, broken):
         ] == expected
         if broken:
             assert connection.execute("SELECT updated FROM analysis").fetchone() == ("created",)
+
+
+def test_equal_frame_ignores_dtype_and_keyed_row_order(tmp_path):
+    channels = pd.DataFrame(
+        {"channel": ["F3", "Pz"], "n": [1, 2], "x": [0.1, 0.5], "y": [0.2, float("nan")]}
+    )
+    with duckdb.connect(str(tmp_path / "result.duckdb")) as connection:
+        insert_frame(connection, "channels", channels)
+        reordered = channels.iloc[::-1].astype({"n": "int32"})
+        require_equal_frame(connection, "channels", reordered, key="channel")
+        with pytest.raises(RuntimeError, match="differs between subjects"):
+            require_equal_frame(connection, "channels", reordered)
+        with pytest.raises(RuntimeError, match="differs between subjects"):
+            require_equal_frame(connection, "channels", channels.iloc[:1], key="channel")
+
+
+def test_settings_fingerprint_ignores_version_and_dataset_root():
+    import json
+
+    from mveeg._provenance import settings_fingerprint
+
+    config = {"mveeg_version": "0.3.1", "dataset": {"root": "/laptop/data", "task": "wm"}, "cv": 5}
+    moved = {"mveeg_version": "0.3.2", "dataset": {"root": "/cluster/data", "task": "wm"}, "cv": 5}
+    assert settings_fingerprint(config) == settings_fingerprint(moved)
+    assert settings_fingerprint(json.dumps(config)) == settings_fingerprint(moved)
+    assert settings_fingerprint(config) != settings_fingerprint({**moved, "cv": 10})

@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from .._analysis.epochs import average_time_bins, build_time_bins, channels_to_drop
+from .._analysis.jobs import resolve_n_jobs
 from .._analysis.topography import build_topography_coord_table
 from .._dataset.manifest import (
     load_subject_epochs_and_metadata,
@@ -21,8 +22,8 @@ from .._dataset.manifest import (
 )
 from .._dataset.metadata import assign_metadata_variables, validate_metadata_variables
 from .._dataset.selection import read_subject_selection
-from .._provenance import fingerprint, fingerprint_files
-from .._results.store import delete_subject
+from .._provenance import fingerprint, fingerprint_files, settings_fingerprint
+from .._results.store import delete_subject, update_analysis_fingerprint
 from ._analysis import SubjectDecoding, decode_subject
 from ._models import classifier_settings
 from ._prepare import (
@@ -206,8 +207,7 @@ class DecodingPipeline:
             raise ValueError("output must be 'mean' or 'all'.")
         if recompute not in {"never", "changed", "all"}:
             raise ValueError("recompute must be 'never', 'changed', or 'all'.")
-        if not isinstance(n_jobs, int) or n_jobs < 1:
-            raise ValueError("n_jobs must be a positive integer.")
+        n_jobs = resolve_n_jobs(n_jobs)
         if not isinstance(progress, bool):
             raise TypeError("progress must be bool.")
         stored_metadata = _normalize_store_metadata(store_metadata)
@@ -257,7 +257,15 @@ class DecodingPipeline:
         }
         if stored_metadata is not None:
             config["store_metadata"] = stored_metadata
-        analysis_fingerprint = fingerprint(config)
+        analysis_fingerprint = settings_fingerprint(config)
+        if (
+            existing is not None
+            and existing["fingerprint"] != analysis_fingerprint
+            and settings_fingerprint(existing["config"]) == analysis_fingerprint
+        ):
+            # Same settings, written by another mveeg version or dataset location.
+            update_analysis_fingerprint(path, analysis_fingerprint)
+            existing["fingerprint"] = analysis_fingerprint
         if existing is not None and existing["fingerprint"] != analysis_fingerprint:
             if recompute != "all":
                 raise ValueError(

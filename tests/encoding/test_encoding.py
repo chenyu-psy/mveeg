@@ -667,6 +667,6 @@ def test_invalid_subject_selection_does_not_change_results(exclusion_analysis):
     (selection.root / "subject_selection.tsv").write_text(
         "subject_index\treason\n999\tunknown\n", encoding="utf-8"
     )
-    with pytest.raises(ValueError, match="unknown"):
+    with pytest.warns(UserWarning, match="not in the dataset"):
         pipeline.encode(**arguments)
     assert subject_state(arguments["file"]) == before

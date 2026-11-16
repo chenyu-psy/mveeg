@@ -16,7 +16,6 @@ def test_missing_or_empty_selection_includes_everyone(tmp_path, contents):
     "contents",
     [
         "subject_index\tnote\n001\tbad\n",
-        "subject_index\treason\n002\tbad\n",
         "subject_index\treason\n001\tbad\nsub-001\tbad\n",
         "subject_index\treason\n001\n",
         "subject_index\treason\n001\tbad\textra\n",

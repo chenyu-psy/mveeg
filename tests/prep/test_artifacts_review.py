@@ -170,6 +170,24 @@ def test_review_group_contract_and_metadata_grouping():
     )
 
     assert session.target_epoch_indices == (0, 1)
+    with_extra = pd.concat(
+        [
+            metadata,
+            pd.DataFrame({"subject_index": ["4001"], "epoch_index": [7], "condition": ["target"]}),
+        ]
+    )
+    extra_session = ReviewSession(
+        table, subject_index="4001", metadata=with_extra, group_by="condition", label="target"
+    )
+    assert extra_session.target_epoch_indices == (0, 1)
+    with pytest.raises(ValueError, match="no row for artifact keys"):
+        ReviewSession(
+            table,
+            subject_index="4001",
+            metadata=metadata.iloc[1:],
+            group_by="condition",
+            label="target",
+        )
     with pytest.raises(ValueError, match="supplied together"):
         ReviewSession(table, subject_index="4001", group_by="initial_status")
 

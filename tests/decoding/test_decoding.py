@@ -1293,6 +1293,33 @@ def test_invalid_subject_selection_does_not_change_results(exclusion_analysis):
     (selection.root / "subject_selection.tsv").write_text(
         "subject_index\treason\n999\tunknown\n", encoding="utf-8"
     )
-    with pytest.raises(ValueError, match="unknown"):
+    with pytest.warns(UserWarning, match="not in the dataset"):
         pipeline.decode(**arguments)
     assert subject_state(arguments["file"]) == before
+
+
+def test_result_file_survives_version_upgrade_and_moved_dataset(exclusion_analysis):
+    """Files from another mveeg version or dataset location are extended, not rejected."""
+    import json
+
+    import duckdb
+
+    from mveeg._results.store import subject_state
+
+    _, pipeline, arguments = exclusion_analysis
+    pipeline.decode(**arguments)
+    before = subject_state(arguments["file"])
+    with duckdb.connect(str(arguments["file"])) as connection:
+        config = json.loads(connection.execute("SELECT config FROM analysis").fetchone()[0])
+        config["mveeg_version"] = "0.0.1"
+        config["dataset"]["root"] = "/somewhere/else"
+        connection.execute(
+            "UPDATE analysis SET config = ?::JSON, fingerprint = 'legacy'", [json.dumps(config)]
+        )
+    pipeline.decode(**arguments)
+    assert subject_state(arguments["file"]) == before
+    with duckdb.connect(str(arguments["file"]), read_only=True) as connection:
+        assert connection.execute("SELECT fingerprint FROM analysis").fetchone()[0] != "legacy"
+    pipeline.setup_cv(folds=2, repeats=1, trial_averaging=1, permutations=1, seed=5)
+    with pytest.raises(ValueError, match="incompatible analysis settings"):
+        pipeline.decode(**arguments)

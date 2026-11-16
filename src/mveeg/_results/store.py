@@ -58,6 +58,13 @@ def read_analysis_row(path: Path, *, analysis: str) -> dict[str, object] | None:
     return dict(zip(columns, values[0], strict=True))
 
 
+def update_analysis_fingerprint(path: Path, fingerprint: str) -> None:
+    """Replace the stored analysis fingerprint for compatible existing settings."""
+
+    with duckdb.connect(str(path)) as connection:
+        connection.execute("UPDATE analysis SET fingerprint = ?", [fingerprint])
+
+
 def create_subjects_table(connection: duckdb.DuckDBPyConnection) -> None:
     """Create the common subject-state table."""
 
@@ -212,14 +219,31 @@ def require_equal_frame(
     connection: duckdb.DuckDBPyConnection,
     table_name: str,
     expected: pd.DataFrame,
+    *,
+    key: str | None = None,
 ) -> None:
-    """Require one support table to match earlier subjects exactly."""
+    """Require one support table to match earlier subjects.
+
+    Values are compared after the DuckDB round trip, so dtype differences
+    (for example int32 versus int64) and float rounding are ignored. With
+    ``key``, rows are matched by that column, so row order may differ.
+    """
 
     observed = connection.execute(f'SELECT * FROM "{table_name}"').df()
-    if list(observed.columns) != list(expected.columns) or not observed.equals(
-        expected.reset_index(drop=True)
-    ):
+    expected = expected.reset_index(drop=True)
+    if list(observed.columns) != list(expected.columns):
         raise RuntimeError(f"{table_name} differs between subjects.")
+    if key is not None:
+        if set(observed[key]) != set(expected[key]) or len(observed) != len(expected):
+            raise RuntimeError(f"{table_name} differs between subjects.")
+        observed = observed.sort_values(key, kind="stable").reset_index(drop=True)
+        expected = expected.sort_values(key, kind="stable").reset_index(drop=True)
+    try:
+        pd.testing.assert_frame_equal(
+            observed, expected, check_dtype=False, check_exact=False, rtol=1e-9, atol=1e-12
+        )
+    except AssertionError as error:
+        raise RuntimeError(f"{table_name} differs between subjects.") from error
 
 
 def require_columns(
