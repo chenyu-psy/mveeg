@@ -374,8 +374,6 @@ def test_autoreject_exclude_channels_validates_configuration():
         apply_autoreject(epochs, eligible, {"ignore_channels": ["E0"]})
     with pytest.raises(TypeError, match="sequence of channel names"):
         apply_autoreject(epochs, eligible, {"exclude_channels": "E0"})
-    with pytest.raises(ValueError, match="thresh_method"):
-        apply_autoreject(epochs, eligible, {"thresh_method": "grid"})
     with pytest.raises(ValueError, match="leaves no EEG channels"):
         apply_autoreject(
             epochs,
@@ -1113,7 +1111,7 @@ def test_review_gaze_rule_labels_deviation_after_autoreject():
     assert "moderate_gaze_deviation" in result.review_reasons[1, 1]
 
 
-def test_autoreject_study_wide_channel_lists_and_thresh_method(monkeypatch):
+def test_autoreject_study_wide_channel_lists(monkeypatch):
     """Array-like, duplicated, or absent excluded channels are tolerated."""
 
     seen = {}
@@ -1141,10 +1139,8 @@ def test_autoreject_study_wide_channel_lists_and_thresh_method(monkeypatch):
     config = {
         "n_interpolate": 1,
         "cv": 2,
-        "thresh_method": "random_search",
         "exclude_channels": np.array(["E0", "E0", "missing"]),
     }
     with pytest.warns(UserWarning, match="ignoring \\['missing'\\]"):
         apply_autoreject(epochs, np.ones(len(epochs), dtype=bool), config)
-    assert seen["thresh_method"] == "random_search"
     assert "E0" not in seen["picks"]

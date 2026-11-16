@@ -40,10 +40,8 @@ _AUTOREJECT_CONFIG_KEYS = {
     "n_interpolate",
     "n_jobs",
     "random_state",
-    "thresh_method",
     "verbose",
 }
-_THRESH_METHODS = {"bayesian_optimization", "random_search"}
 
 
 def _candidate_values(
@@ -313,10 +311,6 @@ def apply_autoreject(
         model_kwargs["consensus"] = _candidate_values(
             config["consensus"], name="consensus", integer=False
         )
-    if "thresh_method" in config:
-        if config["thresh_method"] not in _THRESH_METHODS:
-            raise ValueError(f"autoreject.thresh_method must be one of {sorted(_THRESH_METHODS)}.")
-        model_kwargs["thresh_method"] = config["thresh_method"]
     model = AutoReject(**model_kwargs)
     repaired, log = model.fit_transform(epochs[selected], return_log=True)
     raw_bad = np.asarray(log.bad_epochs, dtype=bool)
