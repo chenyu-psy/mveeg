@@ -49,6 +49,9 @@ EEG units; neither EEG channels nor formula predictors are z-scored.
 
 `setup_model()` and `setup_cv()` are optional. Their defaults are component
 penalty `1.0`, condition penalty `0.1`, five folds, and a generated seed.
+`setup_model(penalty={"component": 10})` changes one penalty and keeps the
+default for the other. The component penalty may be `0`; the condition penalty
+must stay positive because the condition one-hot block spans the intercept.
 
 ## Model and formula
 

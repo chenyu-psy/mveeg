@@ -29,8 +29,10 @@ input is already `mne.Epochs`, `make_epochs()` is unnecessary.
 
 ## Metadata
 
-Row-wise `merge_metadata()` requires equal counts. Keyed mode requires unique,
-one-to-one keys and preserves epoch order:
+Row-wise `merge_metadata()` requires equal counts. Keyed mode requires unique
+keys, gives every epoch exactly one metadata row, and preserves epoch order.
+Metadata rows without a matching epoch (for example practice trials) are
+ignored:
 
 ```python
 external.merge_metadata(
