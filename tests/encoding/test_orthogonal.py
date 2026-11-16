@@ -165,3 +165,26 @@ def test_invalid_condition_measure_is_rejected_before_results(tmp_path, weights)
             progress=False,
         )
     assert not file.exists()
+
+
+def test_orthogonal_defaults_to_unpenalized_components(tmp_path):
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    pipeline = _pipeline(dataset)
+    pipeline.setup_model(method="orthogonal")
+    assert pipeline._model["penalty"] == {"component": 0.0, "condition": 0.1}
+    pipeline.setup_model(method="orthogonal", penalty={"condition": 0.5})
+    assert pipeline._model["penalty"] == {"component": 0.0, "condition": 0.5}
+    pipeline.setup_model(method="orthogonal", penalty={"component": 2.0})
+    assert pipeline._model["penalty"] == {"component": 2.0, "condition": 0.1}
+    pipeline.setup_model()
+    assert pipeline._model["penalty"] == {"component": 1.0, "condition": 0.1}
+
+
+def test_unpenalized_theory_does_not_depend_on_code_scale():
+    data, indicators, theory, weights = _condition_problem()
+    rescaled = theory * np.array([1.0, 10.0, 0.25])
+    original = fit_orthogonal(data, indicators, theory, weights, 0.0, 0.1)
+    scaled = fit_orthogonal(data, indicators, rescaled, weights, 0.0, 0.1)
+    np.testing.assert_allclose(scaled[1], original[1] / 10.0, atol=1e-12)
+    np.testing.assert_allclose(scaled[2], original[2] / 0.25, atol=1e-12)
+    np.testing.assert_allclose(scaled[3:], original[3:], atol=1e-12)

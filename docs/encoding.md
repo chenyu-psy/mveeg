@@ -109,7 +109,7 @@ full-condition columns, choose an explicit alternative method:
 ```python
 pipeline.setup_model(
     method="orthogonal",
-    penalty={"component": 1.0, "condition": 0.1},
+    penalty={"component": 0.0, "condition": 0.1},  # the defaults for this method
     weights=None,  # equal condition weights; or positive weights for all condition keys
 )
 ```
@@ -143,8 +143,25 @@ M = A Theta + R
 
 QR projection and an augmented least-squares solve avoid unnecessary normal
 equations. Residual patterns are orthogonal to the full theoretical space,
-including intercept. Their penalty cannot change theoretical coefficients;
-the theoretical penalty still changes their amplitudes. `M` is a denoised
+including intercept.
+
+The two penalties have different roles:
+
+- `component` shrinks the theoretical patterns. It defaults to 0 because the
+  theory design must be identifiable, so no shrinkage is needed to estimate
+  it. With 0, the patterns do not depend on how codes are scaled: multiplying
+  a code by 10 divides its pattern by 10. A positive value is useful only for
+  near-collinear codes. It then depends on code scale, and on this mean-scale
+  loss it is strong: a 0/1 code with variance .25 keeps 1/(1 + 4 * penalty)
+  of its amplitude, about 20% at penalty 1.
+- `condition` only rescales the residual condition patterns by
+  `1 / (1 + lambda_condition)`. It never changes the theoretical patterns.
+  It does change the fitted trial predictions, and therefore the training
+  residuals from which the noise covariance, and so the expression metric,
+  are estimated.
+
+With `component=0` and weights proportional to training-trial counts, the
+theoretical patterns equal ordinary least squares of the trials on the codes. `M` is a denoised
 estimate, not an exact decomposition of observed condition means. Because this
 loss averages over conditions with total weight one, its penalty magnitudes
 are **not interchangeable** with the trial-sum ridge penalties. No automatic
@@ -192,6 +209,7 @@ counts `[4,8,5,9,6,4]`. Noise scales are .2, .8 and 1.6. Both estimators see
 identical training EEG and independent held-out condition means (20 trials per
 condition), on unchanged raw code scales. The predeclared penalty grid is
 component `[.1,1,10]` by condition `[.01,.1,1]`; there is no truth-selected winner.
+The grid predates the component default of 0 and does not include it.
 
 One residual scenario is orthogonal by construction, which favors the new
 allocation assumption. A second intentionally has overlapping omitted signal.

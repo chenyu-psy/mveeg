@@ -15,8 +15,11 @@
 
 - Add explicit `setup_model(method="orthogonal", weights=...)` for denoised
   condition-space decomposition with theoretical-orthogonal residual patterns.
-  Existing ridge remains the default. Document estimator-specific penalty
-  scales, identifiable condition codes, and paired synthetic accuracy tradeoffs.
+  Existing ridge remains the default. The orthogonal method defaults to an
+  unpenalized component block (`component=0.0`), so its theoretical patterns do
+  not depend on code scale; its condition penalty only rescales residual
+  condition patterns. Document estimator-specific penalty scales, identifiable
+  condition codes, and paired synthetic accuracy tradeoffs.
 
 # mveeg 0.4.0
 

@@ -149,20 +149,24 @@ class EncodingPipeline:
     ) -> EncodingPipeline:
         """Choose overlapping ridge or denoised orthogonal condition decomposition.
 
-        Omitted penalty keys keep their defaults (component 1.0, condition
-        0.1). The component penalty may be 0 (unpenalized); the condition
-        penalty must be positive. Orthogonal mode requires condition-constant,
-        identifiable theoretical codes. Its weights define the condition
-        population, with equal weights by default. Its penalties apply to a
-        weighted mean loss, unlike ridge's trial-level sum loss, so their
-        numerical scales are not interchangeable.
+        Omitted penalty keys keep their method's defaults: component 1.0 for
+        ridge and 0.0 for orthogonal, condition 0.1 for both. The component
+        penalty may be 0 (unpenalized); the condition penalty must be
+        positive. Orthogonal mode requires condition-constant, identifiable
+        theoretical codes. Its weights define the condition population, with
+        equal weights by default. Its penalties apply to a weighted mean loss,
+        unlike ridge's trial-level sum loss, so their numerical scales are not
+        interchangeable.
         """
 
         if method not in {"ridge", "orthogonal"}:
             raise ValueError("method must be 'ridge' or 'orthogonal'.")
         if method == "ridge" and weights is not None:
             raise ValueError("Condition weights apply only to method='orthogonal'.")
-        values = {"component": 1.0, "condition": 0.1}
+        # Orthogonal theory patterns are identified without a penalty, and on
+        # its mean-scale loss a component penalty of 1 already removes most of
+        # the amplitude of 0/1 codes, so that method defaults to no shrinkage.
+        values = {"component": 0.0 if method == "orthogonal" else 1.0, "condition": 0.1}
         supplied = {} if penalty is None else dict(penalty)
         unknown = sorted(set(supplied).difference(values))
         if unknown:
