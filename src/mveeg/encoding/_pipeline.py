@@ -33,7 +33,6 @@ from ._prepare import (
     select_trials,
     validate_groups,
 )
-from ._reference import normalize_expression_reference
 from ._storage import (
     SUBJECT_TABLES,
     completed_subjects,
@@ -41,6 +40,7 @@ from ._storage import (
     mark_failed,
     mark_pending,
     read_analysis,
+    referenced_components,
     result_path,
     subject_state,
     write_subject,
@@ -216,7 +216,6 @@ class EncodingPipeline:
         target: str,
         conditions: Mapping[str, Sequence[object]],
         expression: Mapping[str, Sequence[object]] | None = None,
-        expression_reference: Mapping[str, float] | None = None,
         file: str | Path,
         recompute: str = "never",
         n_jobs: int = 1,
@@ -224,12 +223,10 @@ class EncodingPipeline:
     ) -> None:
         """Fit encoding and write the documented DuckDB result tables.
 
-        ``expression_reference`` sparsely maps expanded numeric component names
-        to actually observed codes. For each listed component, an additional
-        referenced result subtracts the pooled mean of equally weighted matching
-        trials held out from that fold's model. Raw outputs and unlisted
-        components stay unchanged. Reference values are matched exactly;
-        neither display groups nor theoretical predictions define membership.
+        Components whose condition design contains code 0 also get referenced
+        expression: for each fold and time, the mean held-out expression of
+        code-0 trials is subtracted, so 0 means "same as code-0 trials". Raw
+        expression and condition differences are unchanged.
         """
 
         self._refresh_dataset()
@@ -246,7 +243,6 @@ class EncodingPipeline:
         model = dict(self._model)
         if model.get("method") == "orthogonal":
             model["weights"] = normalize_condition_weights(condition_map, model["weights"])
-        reference = normalize_expression_reference(expression_reference)
         path = result_path(file)
         existing = read_analysis(path)
         seed = self._cv["seed"]
@@ -266,15 +262,14 @@ class EncodingPipeline:
             "conditions": condition_map,
             "expression": expression_map,
         }
-        if reference:
-            config["expression_reference"] = reference
-            config["expression_reference_estimator"] = {
-                "version": 1,
-                "matching": "exact_expanded_numeric_code",
-                "weighting": "equal_eligible_matching_trials",
-                "auxiliary": "never_trained_reference_trials_under_each_fold_model",
-                "summary": "equal_trials_public_once_only_scores",
-            }
+        # Recorded for every analysis: result files written before automatic
+        # references lack the referenced tables and must be recomputed.
+        config["expression_reference"] = {
+            "version": 2,
+            "rule": "condition_constant_components_with_code_zero",
+            "weighting": "equal_eligible_code_zero_trials",
+            "auxiliary": "never_trained_code_zero_trials_under_each_fold_model",
+        }
         analysis_fingerprint = settings_fingerprint(config)
         if (
             existing is not None
@@ -353,9 +348,9 @@ class EncodingPipeline:
                 seed=seed,
                 n_jobs=n_jobs,
                 progress=progress,
-                expression_reference=reference,
             )
 
+        expected_references = referenced_components(path)
         for subject in subjects:
             mark_pending(path, subject, fingerprints[subject])
             phase = "preparation"
@@ -363,6 +358,17 @@ class EncodingPipeline:
                 prepared = prepare(subject)
                 phase = "model fitting"
                 encoded = fit(subject, prepared)
+                references = encoded.tables.get("expression_references")
+                referenced = [] if references is None else sorted(set(references["component"]))
+                if expected_references is None:
+                    expected_references = referenced
+                elif referenced != expected_references:
+                    raise ValueError(
+                        f"zero-code references differ between subjects: this subject "
+                        f"references {referenced}, earlier subjects reference "
+                        f"{expected_references}. Every subject needs the same condition "
+                        "codes; check transform_metadata() for this subject."
+                    )
                 phase = "result persistence"
                 _name_coefficient_channels(encoded, prepared["channels"])
                 write_subject(

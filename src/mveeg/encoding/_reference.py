@@ -1,9 +1,8 @@
-"""Observed-code references for held-out component expression."""
+"""Automatic zero-code references for held-out component expression."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from numbers import Real
 
 import numpy as np
 import pandas as pd
@@ -20,39 +19,32 @@ class ExpressionReference:
     rows: np.ndarray
 
 
-def normalize_expression_reference(reference):
-    """Validate sparse component-to-numeric-code settings without guessing labels."""
-    if reference is None:
-        return {}
-    values = dict(reference)
-    for component, value in values.items():
-        if not isinstance(component, str) or not component.strip():
-            raise ValueError("expression_reference keys must be nonempty component names.")
-        if not isinstance(value, Real) or not np.isfinite(value):
-            raise ValueError("expression_reference values must be finite numeric component codes.")
-    return {component: float(value) for component, value in values.items()}
-
-
-def build_expression_references(
-    design: EncodingDesign, reference: dict[str, float]
+def zero_code_references(
+    design: EncodingDesign, training_labels: np.ndarray
 ) -> tuple[ExpressionReference, ...]:
-    """Fix observed matching-code membership independently of condition labels."""
-    unknown = set(reference) - set(design.components)
-    if unknown:
-        raise ValueError(f"expression_reference names unknown components: {sorted(unknown)}.")
-    if not reference:
-        return ()
+    """Reference every component whose condition design contains code 0.
+
+    A component is referenced when its code is constant within each training
+    condition and at least one training condition has code exactly 0. All
+    training conditions must be present for every subject, so the referenced
+    components are the same for every subject. Trial-varying components keep
+    the default training-mean zero. Every trial with code 0, including
+    expression-only trials, belongs to the reference pool.
+    """
+    labels = np.asarray(training_labels, dtype=object)
+    training = pd.notna(labels)
     plans = []
-    for component, value in reference.items():
-        index = design.components.index(component)
-        rows = np.flatnonzero(design.matrix[:, design.component_indices[index]] == value)
-        if not len(rows):
-            raise ValueError(
-                f"Component {component!r} has no expression trials with exact code {value}. "
-                "Reference codes must be observed; round/define transformed codes explicitly "
-                "if floating arithmetic does not produce the intended exact value."
-            )
-        plans.append(ExpressionReference(component, index, value, rows))
+    for index, component in enumerate(design.components):
+        codes = design.matrix[:, design.component_indices[index]]
+        training_codes, training_groups = codes[training], labels[training]
+        constant = all(
+            np.all(training_codes[training_groups == group] == first)
+            for group in pd.unique(training_groups)
+            for first in [training_codes[training_groups == group][0]]
+        )
+        if not constant or not np.any(training_codes == 0):
+            continue
+        plans.append(ExpressionReference(component, index, 0.0, np.flatnonzero(codes == 0)))
     return tuple(plans)
 
 

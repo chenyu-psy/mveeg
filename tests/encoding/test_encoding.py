@@ -366,8 +366,16 @@ def test_pipeline_writes_public_duckdb_and_condition_view(tmp_path):
             "pattern_expression",
             "design_diagnostics",
             "covariance_diagnostics",
+            # a and b both have code 0, so both get automatic references.
+            "referenced_pattern_expression",
+            "expression_references",
+            "expression_reference_trials",
         }
-        assert "condition_pattern_expression" in views
+        assert {
+            "condition_pattern_expression",
+            "condition_referenced_pattern_expression",
+            "fold_condition_referenced_pattern_expression",
+        } <= views
         assert connection.execute("SELECT status FROM subjects").fetchone()[0] == "complete"
         assert connection.execute(
             "SELECT DISTINCT role FROM predictors ORDER BY role"

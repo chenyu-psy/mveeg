@@ -263,6 +263,29 @@ def _create_condition_view(connection: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def referenced_components(path: Path) -> list[str] | None:
+    """Return components referenced by completed subjects, or None if there are none."""
+
+    if not path.exists():
+        return None
+    with duckdb.connect(str(path), read_only=True) as connection:
+        if not table_exists(connection, "subjects"):
+            return None
+        complete = connection.execute(
+            "SELECT COUNT(*) FROM subjects WHERE status = 'complete'"
+        ).fetchone()[0]
+        if not complete:
+            return None
+        if not table_exists(connection, "expression_references"):
+            return []
+        rows = connection.execute(
+            "SELECT DISTINCT r.component FROM expression_references AS r "
+            "JOIN subjects AS s USING (subject_index) WHERE s.status = 'complete' "
+            "ORDER BY r.component"
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def _create_referenced_condition_view(connection: duckdb.DuckDBPyConnection) -> None:
     """Summarize public trials equally and expose fold mixtures without trial-based SEs."""
     connection.execute(
@@ -292,6 +315,7 @@ __all__ = [
     "mark_failed",
     "mark_pending",
     "read_analysis",
+    "referenced_components",
     "result_path",
     "subject_state",
     "write_subject",

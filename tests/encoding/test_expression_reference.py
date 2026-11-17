@@ -1,4 +1,4 @@
-"""Observed-code reference behavior through the actual encoding workflow."""
+"""Automatic zero-code references through the actual encoding workflow."""
 
 import json
 
@@ -8,9 +8,10 @@ import pandas as pd
 import pytest
 
 import mveeg.encoding._analysis as analysis
+from mveeg._provenance import settings_fingerprint
 from mveeg.encoding._analysis import encode_subject
 from mveeg.encoding._prepare import build_design
-from mveeg.encoding._reference import build_expression_references
+from mveeg.encoding._reference import zero_code_references
 from mveeg.prep import open_pipeline
 from tests.encoding.test_encoding import _build_dataset, _pipeline
 
@@ -49,40 +50,94 @@ def _run(**overrides):
     return encode_subject(**settings)
 
 
-def test_omitted_empty_and_partial_references_preserve_all_legacy_results():
-    original = _run()
-    empty = _run(expression_reference={})
-    partial = _run(expression_reference={"a": 0})
-    for name in original.tables:
-        pd.testing.assert_frame_equal(original.tables[name], empty.tables[name])
-        pd.testing.assert_frame_equal(original.tables[name], partial.tables[name])
-    assert set(partial.tables["referenced_pattern_expression"].component) == {"a"}
-    assert len(partial.tables["referenced_pattern_expression"]) * 2 == len(
-        original.tables["pattern_expression"]
+def test_zero_coded_components_are_referenced_to_their_code_zero_trials():
+    result = _run()
+    metadata = _settings()["metadata"]
+    offsets = result.tables["expression_references"]
+    assert set(offsets.component) == {"a", "b"}
+    assert offsets.reference_value.eq(0).all()
+    audit = result.tables["expression_reference_trials"]
+    for component in ("a", "b"):
+        rows = audit.query("component == @component")
+        assert metadata.iloc[rows.epoch_index][component].eq(0).all()
+    assert len(result.tables["referenced_pattern_expression"]) == len(
+        result.tables["pattern_expression"]
     )
 
 
-def test_multiple_components_use_different_observed_numeric_codes():
-    result = _run(expression_reference={"a": 0, "b": 1})
-    audit = result.tables["expression_reference_trials"]
-    metadata = _settings()["metadata"]
-    for component, expected in (("a", 0), ("b", 1)):
-        rows = audit.query("component == @component")
-        assert metadata.iloc[rows.epoch_index][component].eq(expected).all()
-    offset = result.tables["expression_references"]
-    assert set(zip(offset.component, offset.reference_value)) == {("a", 0.0), ("b", 1.0)}
+def test_components_without_zero_or_with_trial_varying_codes_keep_the_default_zero():
+    settings = _settings()
+    contrast = settings["metadata"].copy()
+    contrast.a = contrast.a * 2 - 1
+    result = encode_subject(**{**settings, "metadata": contrast})
+    assert set(result.tables["expression_references"].component) == {"b"}
+    # Ridge with a code that varies within condition A: a is not referenced.
+    varied = settings["metadata"].copy()
+    varied.loc[varied.condition == "A", "a"] = np.linspace(0.2, 1.4, 8)
+    result = encode_subject(**{**settings, "metadata": varied})
+    assert set(result.tables["expression_references"].component) == {"b"}
+    # No component has code 0: no referenced tables are written.
+    shifted = settings["metadata"].copy()
+    shifted.a += 1
+    shifted.b += 1
+    result = encode_subject(**{**settings, "metadata": shifted})
+    assert "referenced_pattern_expression" not in result.tables
+
+
+def test_interaction_reference_pools_every_trial_with_interaction_code_zero():
+    labels = np.repeat(np.array(["N", "A", "B", "AB"], object), 2)
+    metadata = pd.DataFrame(
+        {
+            "a": np.isin(labels, ["A", "AB"]).astype(float),
+            "b": np.isin(labels, ["B", "AB"]).astype(float),
+        }
+    )
+    design = build_design(
+        metadata,
+        formula="a*b",
+        training_labels=labels,
+        condition_order=["N", "A", "B", "AB"],
+        penalty={"component": 0.0, "condition": 0.1},
+    )
+    plans = {plan.component: plan.rows.tolist() for plan in zero_code_references(design, labels)}
+    assert plans == {"a": [0, 1, 4, 5], "b": [0, 1, 2, 3], "a:b": [0, 1, 2, 3, 4, 5]}
+
+
+def test_zero_matching_is_exact():
+    labels = np.array(["A", "B"] * 2, object)
+    design = build_design(
+        pd.DataFrame({"a": [0.1 + 0.2 - 0.3, 1.0] * 2}),
+        formula="a",
+        training_labels=labels,
+        condition_order=["A", "B"],
+        penalty={"component": 0.0, "condition": 0.1},
+    )
+    assert zero_code_references(design, labels) == ()
+
+
+def test_near_null_pattern_cannot_define_a_reference(monkeypatch):
+    settings = _settings()
+    original = analysis.compute_pattern_expression
+
+    def undefined_expression(*args, **kwargs):
+        expression, warnings = original(*args, **kwargs)
+        return np.full_like(expression, np.nan), warnings
+
+    monkeypatch.setattr(analysis, "compute_pattern_expression", undefined_expression)
+    with pytest.raises(ValueError, match="nonfinite"):
+        encode_subject(**settings)
 
 
 def test_reference_plans_and_auxiliary_projections_are_identical_in_parallel():
-    serial = _run(expression_reference={"a": 0, "b": 1})
-    parallel = _run(expression_reference={"a": 0, "b": 1}, n_jobs=2)
+    serial = _run()
+    parallel = _run(n_jobs=2)
     for name in serial.tables:
         pd.testing.assert_frame_equal(serial.tables[name], parallel.tables[name])
 
 
 def test_reference_pools_trials_across_unequal_conditions_and_display_regrouping():
     settings = _settings()
-    result = encode_subject(**settings, expression_reference={"a": 0})
+    result = encode_subject(**settings)
     audit = result.tables["expression_reference_trials"]
     offsets = result.tables["expression_references"].set_index(["fold", "component", "time"])
     differs_from_equal_conditions = []
@@ -100,9 +155,7 @@ def test_reference_pools_trials_across_unequal_conditions_and_display_regrouping
     # Label pooling changes display only, not filter fitting or reference membership.
     regrouped = settings["expression_labels"].copy()
     regrouped[np.isin(regrouped, ["P", "Q"])] = "control"
-    other = encode_subject(
-        **{**settings, "expression_labels": regrouped}, expression_reference={"a": 0}
-    )
+    other = encode_subject(**{**settings, "expression_labels": regrouped})
     pd.testing.assert_frame_equal(audit, other.tables["expression_reference_trials"])
     pd.testing.assert_frame_equal(
         result.tables["expression_references"], other.tables["expression_references"]
@@ -111,7 +164,7 @@ def test_reference_pools_trials_across_unequal_conditions_and_display_regrouping
 
 def test_auxiliary_reference_projection_never_duplicates_public_trials_or_uses_training_rows():
     settings = _settings()
-    result = encode_subject(**settings, expression_reference={"a": 0})
+    result = encode_subject(**settings)
     public = result.tables["pattern_expression"]
     referenced = result.tables["referenced_pattern_expression"]
     assert not public.duplicated(["epoch_index", "component", "time"]).any()
@@ -132,7 +185,7 @@ def test_auxiliary_reference_projection_never_duplicates_public_trials_or_uses_t
 
 
 def test_referencing_preserves_within_fold_differences_and_exposes_common_offset():
-    result = _run(expression_reference={"a": 0})
+    result = _run()
     scores = result.tables["referenced_pattern_expression"]
     np.testing.assert_allclose(
         scores.expression, scores.raw_expression - scores.reference_expression
@@ -153,107 +206,38 @@ def test_referencing_preserves_within_fold_differences_and_exposes_common_offset
 
 def test_heldout_eeg_and_auxiliary_reference_never_refit_encoder_or_noise():
     settings = _settings()
-    first = encode_subject(**settings, expression_reference={"a": 0})
+    first = encode_subject(**settings)
     public = first.tables["pattern_expression"]
     fold = int(public.loc[public.epoch_index == 0, "fold"].iloc[0])
     changed = settings["data"].copy()
     changed[0] += np.linspace(-20, 20, changed.shape[1])[:, None] * 1e-6
-    second = encode_subject(**{**settings, "data": changed}, expression_reference={"a": 0})
+    second = encode_subject(**{**settings, "data": changed})
+    # Trial 0 has a = 1, so it is outside a's reference pool; within its
+    # held-out fold, nothing about component a may change except trial 0 itself.
     for table in ("pattern_expression", "referenced_pattern_expression"):
         old = first.tables[table]
         new = second.tables[table]
-        keep = (old.fold == fold) & (old.epoch_index != 0)
+        keep = (old.fold == fold) & (old.epoch_index != 0) & (old.component == "a")
         pd.testing.assert_frame_equal(
             old.loc[keep].reset_index(drop=True), new.loc[keep].reset_index(drop=True)
         )
+    a_offsets = "fold == @fold and component == 'a'"
     pd.testing.assert_frame_equal(
-        first.tables["expression_references"].query("fold == @fold").reset_index(drop=True),
-        second.tables["expression_references"].query("fold == @fold").reset_index(drop=True),
+        first.tables["expression_references"].query(a_offsets).reset_index(drop=True),
+        second.tables["expression_references"].query(a_offsets).reset_index(drop=True),
     )
     # Changing never-trained reference EEG legitimately changes the observed
     # offset, but must not change any fitted coefficient or covariance estimate.
     changed = settings["data"].copy()
     probe = int(np.flatnonzero(settings["expression_labels"] == "P")[0])
     changed[probe] += np.linspace(-10, 10, changed.shape[1])[:, None] * 1e-6
-    auxiliary = encode_subject(**{**settings, "data": changed}, expression_reference={"a": 0})
+    auxiliary = encode_subject(**{**settings, "data": changed})
     for table in ("coefficients", "covariance_diagnostics"):
         pd.testing.assert_frame_equal(first.tables[table], auxiliary.tables[table])
     assert not np.allclose(
         first.tables["expression_references"].reference_expression,
         auxiliary.tables["expression_references"].reference_expression,
     )
-
-
-def test_membership_uses_expanded_interactions_and_trial_varying_codes():
-    metadata = pd.DataFrame({"a": [-1.0, 0, 1, 2], "b": [0.0, 2, 0, 3]})
-    labels = np.array(["one"] * 4, object)
-    design = build_design(
-        metadata,
-        formula="a*b",
-        training_labels=labels,
-        condition_order=["one"],
-        penalty={"component": 1.0, "condition": 0.1},
-    )
-    plans = build_expression_references(design, {"a": 2.0, "a:b": 0.0})
-    assert plans[0].rows.tolist() == [3]
-    assert plans[1].rows.tolist() == [0, 1, 2]
-    # A numerical code can be observed without any condition-constant design constraint.
-    assert design.matrix[3, design.component_indices[0]] == 2
-    varied = _settings()["metadata"].copy()
-    varied.loc[varied.condition == "A", "a"] = np.linspace(0.2, 1.4, 8)
-    legacy = _run(metadata=varied, formula="a*b")
-    result = _run(metadata=varied, formula="a*b", expression_reference={"a:b": 0})
-    for name in legacy.tables:
-        pd.testing.assert_frame_equal(legacy.tables[name], result.tables[name])
-    audit = result.tables["expression_reference_trials"]
-    metadata = varied.iloc[audit.epoch_index]
-    assert (metadata.a * metadata.b).eq(0).all()
-    assert set(result.tables["referenced_pattern_expression"].component) == {"a:b"}
-
-
-def test_contrast_coding_nonzero_reference_and_exact_floating_match_policy():
-    settings = _settings()
-    metadata = settings["metadata"].copy()
-    metadata.a = metadata.a * 2 - 1
-    result = encode_subject(**{**settings, "metadata": metadata}, expression_reference={"a": -1})
-    assert result.tables["expression_references"].reference_value.eq(-1).all()
-    with pytest.raises(ValueError, match="exact code"):
-        encode_subject(**{**settings, "metadata": metadata}, expression_reference={"a": 0})
-    design = build_design(
-        pd.DataFrame({"a": [0.3 - 0.2, 0.2]}),
-        formula="a",
-        training_labels=np.array(["A", "B"], object),
-        condition_order=["A", "B"],
-        penalty={"component": 1.0, "condition": 0.1},
-    )
-    with pytest.raises(ValueError, match="exact code"):
-        build_expression_references(design, {"a": 0.1})
-
-
-def test_no_heldout_reference_and_near_null_pattern_fail_without_fallback(monkeypatch):
-    settings = _settings()
-    # This observed code occurs in one training trial, so cannot be held out
-    # from every fold model. It must not be reused in the models that trained it.
-    rare_code = settings["metadata"].copy()
-    rare_code.loc[0, "a"] = 2
-    with pytest.raises(ValueError, match="no matching reference trials are held out"):
-        encode_subject(**{**settings, "metadata": rare_code}, expression_reference={"a": 2})
-    # An all-zero component is now rejected as aliased before any reference is built.
-    zero_component = settings["metadata"].copy()
-    zero_component.a = 0
-    with pytest.raises(ValueError, match="aliased in the training trials: a = 0"):
-        encode_subject(**{**settings, "metadata": zero_component}, expression_reference={"a": 0})
-
-    # A near-null filter leaves undefined (NaN) expression; it cannot define a reference.
-    original = analysis.compute_pattern_expression
-
-    def undefined_expression(*args, **kwargs):
-        expression, warnings = original(*args, **kwargs)
-        return np.full_like(expression, np.nan), warnings
-
-    monkeypatch.setattr(analysis, "compute_pattern_expression", undefined_expression)
-    with pytest.raises(ValueError, match="nonfinite"):
-        encode_subject(**settings, expression_reference={"a": 0})
 
 
 def _pipeline_case(tmp_path, subjects=("001",)):
@@ -264,45 +248,42 @@ def _pipeline_case(tmp_path, subjects=("001",)):
         target="condition",
         conditions={"A": ["A"], "B": ["B"], "AB": ["AB"]},
         expression={"A": ["A"], "B": ["B"], "AB": ["AB"], "probe": ["P"]},
-        expression_reference={"a": 0},
         file=tmp_path / "reference.duckdb",
         progress=False,
     )
     return dataset, pipeline, settings
 
 
-@pytest.mark.parametrize("reference", [{"a": "B"}, {"a": np.nan}, {"a": np.inf}, {"unknown": 0}])
-def test_pipeline_rejects_non_numeric_and_unknown_component_reference(tmp_path, reference):
+def test_encode_has_no_reference_argument(tmp_path):
     _, pipeline, settings = _pipeline_case(tmp_path)
-    with pytest.raises((ValueError, RuntimeError), match="numeric|unknown"):
-        pipeline.encode(**{**settings, "expression_reference": reference})
+    with pytest.raises(TypeError, match="expression_reference"):
+        pipeline.encode(**settings, expression_reference={"a": 0})
 
 
-def test_persistence_offsets_trial_weighted_views_resume_and_config_change(tmp_path):
+def test_persistence_views_resume_and_rule_in_config(tmp_path):
     _, pipeline, settings = _pipeline_case(tmp_path)
     pipeline.encode(**settings)
     with duckdb.connect(str(settings["file"]), read_only=True) as connection:
         config = json.loads(connection.execute("SELECT config FROM analysis").fetchone()[0])
-        assert config["expression_reference"] == {"a": 0.0}
-        assert (
-            config["expression_reference_estimator"]["weighting"]
-            == "equal_eligible_matching_trials"
+        assert config["expression_reference"]["rule"] == (
+            "condition_constant_components_with_code_zero"
         )
         original = connection.execute(
-            "SELECT * FROM referenced_pattern_expression ORDER BY epoch_index,time"
+            "SELECT * FROM referenced_pattern_expression ORDER BY epoch_index,component,time"
         ).fetchdf()
-        offset = connection.execute("SELECT * FROM expression_references").fetchdf()
-        assert len(offset) > 0
+        assert set(original.component) == {"a", "b"}
         observed = connection.execute(
-            "SELECT * FROM condition_referenced_pattern_expression ORDER BY condition,time"
+            "SELECT * FROM condition_referenced_pattern_expression "
+            "ORDER BY condition,component,time"
         ).fetchdf()
-        assert "expression_se" not in observed and "se" not in observed
         direct = connection.execute(
-            "SELECT expression_group AS condition,time,AVG(expression) AS mean,"
+            "SELECT expression_group AS condition,component,time,AVG(expression) AS mean,"
             "COUNT(DISTINCT epoch_index) AS n_trials FROM referenced_pattern_expression "
-            "GROUP BY expression_group,time ORDER BY condition,time"
+            "GROUP BY expression_group,component,time ORDER BY condition,component,time"
         ).fetchdf()
-        pd.testing.assert_frame_equal(observed[["condition", "time", "mean", "n_trials"]], direct)
+        pd.testing.assert_frame_equal(
+            observed[["condition", "component", "time", "mean", "n_trials"]], direct
+        )
         folds = connection.execute(
             "SELECT * FROM fold_condition_referenced_pattern_expression"
         ).fetchdf()
@@ -312,37 +293,40 @@ def test_persistence_offsets_trial_weighted_views_resume_and_config_change(tmp_p
         pd.testing.assert_frame_equal(
             original,
             connection.execute(
-                "SELECT * FROM referenced_pattern_expression ORDER BY epoch_index,time"
+                "SELECT * FROM referenced_pattern_expression ORDER BY epoch_index,component,time"
             ).fetchdf(),
         )
-    with pytest.raises(ValueError, match="incompatible"):
-        pipeline.encode(**{**settings, "expression_reference": {"b": 0}})
-    pipeline.encode(**{**settings, "expression_reference": {"b": 0}, "recompute": "all"})
-    with duckdb.connect(str(settings["file"]), read_only=True) as connection:
-        assert connection.execute(
-            "SELECT DISTINCT component FROM referenced_pattern_expression"
-        ).fetchall() == [("b",)]
 
 
-def test_empty_reference_preserves_existing_default_fingerprint_and_tables(tmp_path):
+def test_result_files_without_automatic_references_must_be_recomputed(tmp_path):
     _, pipeline, settings = _pipeline_case(tmp_path)
-    settings.pop("expression_reference")
     pipeline.encode(**settings)
-    with duckdb.connect(str(settings["file"]), read_only=True) as connection:
-        original = connection.execute("SELECT fingerprint,config FROM analysis").fetchall()
-        tables = connection.execute(
-            "SELECT table_name FROM information_schema.tables ORDER BY table_name"
-        ).fetchall()
-    pipeline.encode(**settings, expression_reference={})
-    with duckdb.connect(str(settings["file"]), read_only=True) as connection:
-        assert connection.execute("SELECT fingerprint,config FROM analysis").fetchall() == original
-        assert (
-            connection.execute(
-                "SELECT table_name FROM information_schema.tables ORDER BY table_name"
-            ).fetchall()
-            == tables
+    # Simulate a file written before automatic references existed.
+    with duckdb.connect(str(settings["file"])) as connection:
+        config = json.loads(connection.execute("SELECT config FROM analysis").fetchone()[0])
+        config.pop("expression_reference")
+        connection.execute(
+            "UPDATE analysis SET config = ?, fingerprint = ?",
+            [json.dumps(config), settings_fingerprint(config)],
         )
-        assert "expression_reference" not in json.loads(original[0][1])
+    with pytest.raises(ValueError, match="incompatible"):
+        pipeline.encode(**settings)
+    pipeline.encode(**settings, recompute="all")
+
+
+def test_subjects_with_different_references_are_rejected(tmp_path, monkeypatch):
+    _, pipeline, settings = _pipeline_case(tmp_path, ("001", "002"))
+    original = analysis.zero_code_references
+    calls = []
+
+    def second_subject_without_b(design, labels):
+        calls.append(1)
+        plans = original(design, labels)
+        return plans if len(calls) == 1 else tuple(p for p in plans if p.component != "b")
+
+    monkeypatch.setattr(analysis, "zero_code_references", second_subject_without_b)
+    with pytest.raises(RuntimeError, match="zero-code references differ between subjects"):
+        pipeline.encode(**settings)
 
 
 def test_reference_transaction_rollback_and_subject_exclusions(tmp_path, monkeypatch):

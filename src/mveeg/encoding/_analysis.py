@@ -18,7 +18,7 @@ from ._metrics import (
     fit_ridge,
 )
 from ._prepare import EncodingDesign, build_design, check_component_identifiability
-from ._reference import build_expression_references, compute_expression_references
+from ._reference import compute_expression_references, zero_code_references
 
 
 @dataclass
@@ -45,7 +45,6 @@ def encode_subject(
     progress: bool = True,
     method: str = "ridge",
     weights: dict[str, float] | None = None,
-    expression_reference: dict[str, float] | None = None,
 ) -> SubjectEncoding:
     """Fit one subject and return public result rows."""
 
@@ -70,7 +69,7 @@ def encode_subject(
         method=method,
         weights=weights,
     )
-    references = build_expression_references(design, expression_reference or {})
+    references = zero_code_references(design, training_labels)
     training = pd.notna(training_labels)
     counts = pd.Series(training_labels[training]).value_counts()
     missing = [condition for condition in condition_order if condition not in counts]

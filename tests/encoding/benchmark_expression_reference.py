@@ -39,7 +39,6 @@ def run_benchmark(repeats=200):
         folds=4,
         seed=7,
         progress=False,
-        expression_reference={"x": 0},
     )
     records = []
     for signal in (0.0, 0.25, 1.0):
@@ -49,7 +48,8 @@ def run_benchmark(repeats=200):
             data = (signal * (x[:, None] * p1 + z[:, None] * p2) + noise)[:, :, None] * 1e-6
             result = encode_subject(data=data, **settings)
             raw = result.tables["pattern_expression"].query("component == 'x'")
-            relative = result.tables["referenced_pattern_expression"]
+            # x and z both have code 0 in A, so both are referenced; report x.
+            relative = result.tables["referenced_pattern_expression"].query("component == 'x'")
             raw_means = raw.groupby("expression_group").expression.mean()
             relative_means = relative.groupby("expression_group").expression.mean()
             preservation = 0.0
@@ -58,8 +58,12 @@ def run_benchmark(repeats=200):
                     preservation,
                     float(np.max(np.abs(np.diff(rows.expression) - np.diff(rows.raw_expression)))),
                 )
-            audit = result.tables["expression_reference_trials"]
-            offsets = result.tables["expression_references"].set_index(["fold", "time"])
+            audit = result.tables["expression_reference_trials"].query("component == 'x'")
+            offsets = (
+                result.tables["expression_references"]
+                .query("component == 'x'")
+                .set_index(["fold", "time"])
+            )
             coordinate_error = 0.0
             for key, rows in audit.groupby(["fold", "time"]):
                 offset = offsets.loc[key].reference_expression
