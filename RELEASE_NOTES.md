@@ -11,6 +11,16 @@
   the data. Formulas without aliased components give the same results and
   fingerprints as before.
 
+## New
+
+- Add explicit `setup_model(method="orthogonal", weights=...)` for denoised
+  condition-space decomposition with theoretical-orthogonal residual patterns.
+  Existing ridge remains the default. The orthogonal method defaults to an
+  unpenalized component block (`component=0.0`), so its theoretical patterns do
+  not depend on code scale; its condition penalty only rescales residual
+  condition patterns. Document estimator-specific penalty scales, identifiable
+  condition codes, and paired synthetic accuracy tradeoffs.
+
 # mveeg 0.4.0
 
 mveeg 0.4.0 adds dataset-level subject exclusions, accepts many inputs that

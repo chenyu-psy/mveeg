@@ -24,6 +24,9 @@ class EncodingDesign:
     components: tuple[str, ...]
     component_indices: tuple[int, ...]
     interactions: tuple[str, ...]
+    method: str = "ridge"
+    condition_design: np.ndarray | None = None
+    condition_weights: np.ndarray | None = None
 
 
 def validate_groups(
@@ -129,6 +132,18 @@ def check_component_identifiability(
     )
 
 
+def normalize_condition_weights(conditions, weights):
+    """Return a fixed positive condition measure normalized to sum to one."""
+    if weights is not None and set(weights) != set(conditions):
+        raise ValueError("weights must name every training condition exactly once.")
+    values = np.array([1.0 if weights is None else weights[c] for c in conditions], dtype=float)
+    if not np.isfinite(values).all() or np.any(values <= 0):
+        raise ValueError("Condition weights must be finite and positive.")
+    values /= values.max()
+    values /= values.sum()
+    return dict(zip(conditions, values, strict=True))
+
+
 def build_design(
     metadata: pd.DataFrame,
     *,
@@ -136,6 +151,8 @@ def build_design(
     training_labels: np.ndarray,
     condition_order: Sequence[str],
     penalty: Mapping[str, float],
+    method: str = "ridge",
+    weights: Mapping[str, float] | None = None,
 ) -> EncodingDesign:
     """Build the numeric component design and complete condition basis."""
 
@@ -177,6 +194,25 @@ def build_design(
         penalties.append(float(penalty["condition"]))
 
     matrix = np.column_stack(columns)
+    condition_design, condition_weights = None, None
+    if method == "orthogonal":
+        condition_design = []
+        for condition in condition_order:
+            values = matrix[training_labels == condition, :component_count]
+            if not len(values):
+                raise ValueError(f"Missing training condition {condition!r}.")
+            if not np.all(values == values[0]):
+                raise ValueError(
+                    "Orthogonal condition encoding requires condition-constant codes; "
+                    f"{condition!r} varies within condition. "
+                    "Use method='ridge' for trial-varying codes."
+                )
+            condition_design.append(values[0])
+        # Aliased theory is rejected for both methods by
+        # check_component_identifiability before any fold is fitted.
+        condition_design = np.asarray(condition_design)
+        weights = normalize_condition_weights(condition_order, weights)
+        condition_weights = np.array([weights[c] for c in condition_order])
 
     predictors = pd.DataFrame(
         {
@@ -192,6 +228,9 @@ def build_design(
         components=tuple(parsed["predictors"]),
         component_indices=tuple(range(1, component_count)),
         interactions=tuple(parsed["interactions"]),
+        method=method,
+        condition_design=condition_design,
+        condition_weights=condition_weights,
     )
 
 
