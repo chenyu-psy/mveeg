@@ -64,7 +64,11 @@ class EncodingPipeline:
             "drop_channel_types": list(DEFAULT_DROP_TYPES),
             "drop_channels": [],
         }
-        self._model = {"penalty": {"component": 1.0, "condition": 0.1}}
+        self._model = {
+            "penalty": {"component": 0.0, "condition": 0.1},
+            "method": "orthogonal",
+            "weights": None,
+        }
         self._cv = {"folds": 5, "seed": None}
 
     def transform_metadata(
@@ -144,10 +148,14 @@ class EncodingPipeline:
         self,
         *,
         penalty: Mapping[str, float] | None = None,
-        method: str = "ridge",
+        method: str = "orthogonal",
         weights: Mapping[str, float] | None = None,
     ) -> EncodingPipeline:
-        """Choose overlapping ridge or denoised orthogonal condition decomposition.
+        """Choose the orthogonal condition decomposition (default) or ridge.
+
+        Use the default orthogonal method when every training condition has one
+        fixed code per component. Use ``method="ridge"`` when a component varies
+        from trial to trial within a condition, such as a per-trial covariate.
 
         Omitted penalty keys keep their method's defaults: component 1.0 for
         ridge and 0.0 for orthogonal, condition 0.1 for both. The component

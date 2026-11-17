@@ -2,6 +2,14 @@
 
 ## Changed
 
+- **Breaking:** encoding now uses `method="orthogonal"` by default. It fits
+  condition means, so its component patterns are identified by the data rather
+  than by the ridge penalty ratio. Ridge remains available with
+  `setup_model(method="ridge")` and is required when a component varies within
+  a condition; the orthogonal method stops with an error that says so. Existing
+  result files were written with ridge: running an unchanged script against
+  one now reports incompatible analysis settings. Add
+  `setup_model(method="ridge")` to keep them current, or use `recompute="all"`.
 - Encoding now stops with an error when formula components are aliased with
   each other or with the intercept in a subject's training trials or in any
   training fold. The message names each relation, such as

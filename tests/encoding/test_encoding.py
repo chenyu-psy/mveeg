@@ -398,7 +398,11 @@ def test_pipeline_writes_public_duckdb_and_condition_view(tmp_path):
             connection.execute("SELECT config::VARCHAR FROM analysis").fetchone()[0]
         )
         assert config["metadata_variables"] == ["a", "b"]
-        assert config["model"]["penalty"] == {"component": 1.0, "condition": 0.1}
+        assert config["model"] == {
+            "penalty": {"component": 0.0, "condition": 0.1},
+            "method": "orthogonal",
+            "weights": {"A": 1 / 3, "B": 1 / 3, "AB": 1 / 3},
+        }
 
 
 def test_pipeline_incrementally_adds_subject_and_rejects_config_change(tmp_path):

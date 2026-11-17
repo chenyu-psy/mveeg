@@ -127,7 +127,7 @@ pipeline.transform_metadata(
 pipeline.encode(
     formula="1 + color + number",
     target="condition",
-    conditions={"color": ["color"], "number": ["number"]},
+    conditions={"color": ["color"], "number": ["number"], "both": ["both"]},
     file="results/encoding.duckdb",
 )
 ```

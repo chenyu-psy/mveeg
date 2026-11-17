@@ -203,9 +203,9 @@ def build_design(
                 raise ValueError(f"Missing training condition {condition!r}.")
             if not np.all(values == values[0]):
                 raise ValueError(
-                    "Orthogonal condition encoding requires condition-constant codes; "
-                    f"{condition!r} varies within condition. "
-                    "Use method='ridge' for trial-varying codes."
+                    "The default orthogonal method requires one code per training "
+                    f"condition, but {condition!r} varies within condition. "
+                    "Use setup_model(method='ridge') for trial-varying codes."
                 )
             condition_design.append(values[0])
         # Aliased theory is rejected for both methods by
