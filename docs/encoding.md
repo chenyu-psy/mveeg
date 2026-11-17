@@ -14,7 +14,6 @@ pipeline.transform_metadata(
     color=lambda x: x["color_count"].gt(0).astype(float),
     number=lambda x: x["number_count"].gt(0).astype(float),
     load=lambda x: (x["color_count"] + x["number_count"] - 1).astype(float),
-    interaction=lambda x: (x["color"].eq(1) & x["number"].eq(1)).astype(float),
 )
 pipeline.select_trials(qc="final_status", keep=["accepted"], exclude={})
 pipeline.prepare_epochs(
@@ -23,10 +22,10 @@ pipeline.prepare_epochs(
     drop_channel_types=("eog", "eyegaze", "pupil", "misc"),
     drop_channels=(),
 )
-pipeline.setup_model(penalty={"component": 1.0, "condition": 0.1})
+pipeline.setup_model()  # orthogonal condition decomposition, the default
 pipeline.setup_cv(folds=5, seed=None)
 pipeline.encode(
-    formula="1 + color + number + load + interaction",
+    formula="1 + color + number + load",
     target="condition",
     conditions=TRAINING_CONDITIONS,
     expression=EXPRESSION_CONDITIONS,
@@ -47,15 +46,32 @@ maintained versions, enter each subject's input fingerprint.
 removes requested channels. The fitted response remains in the original MNE
 EEG units; neither EEG channels nor formula predictors are z-scored.
 
-`setup_model()` and `setup_cv()` are optional. Their defaults are component
-penalty `1.0`, condition penalty `0.1`, five folds, and a generated seed.
-`setup_model(penalty={"component": 10})` changes one penalty and keeps the
-default for the other. The component penalty may be `0`; the condition penalty
-must stay positive because the condition one-hot block spans the intercept.
+`setup_model()` and `setup_cv()` are optional. The default model is the
+orthogonal condition decomposition (`method="orthogonal"`, component penalty
+`0`, condition penalty `0.1`, equal condition weights); the default CV is five
+folds with a generated seed. `setup_model(penalty={"component": 10})` changes
+one penalty and keeps the method's default for the other.
 
-## Model and formula
+## Choosing a method
 
-For every subject and time bin, mveeg fits
+- **`method="orthogonal"` (default)** fits condition means. Use it whenever
+  every training condition has one fixed code for each component, which covers
+  factorial, incomplete, and parametric condition designs. Its theoretical
+  patterns are set by the data, not by a penalty ratio.
+- **`method="ridge"`** fits single trials. Use it when a component varies from
+  trial to trial within a condition, for example a per-trial covariate or an
+  unbinned continuous stimulus value. With condition-constant codes, ridge's
+  split between component and condition columns depends on the penalties, so
+  its component coefficients are not identified by the data.
+
+The orthogonal method stops with an error that points to ridge when a code
+varies within a condition. Result files written before orthogonal became the
+default used ridge; add `setup_model(method="ridge")` to reproduce them, or
+recompute with the new default.
+
+## Ridge model
+
+With `method="ridge"`, for every subject and time bin, mveeg fits
 
 ```text
 Y = X_component B_component + Z_condition B_condition + E
@@ -64,7 +80,11 @@ Y = X_component B_component + Z_condition B_condition + E
 by minimizing the unscaled sum of squared residuals plus separate component
 and condition ridge penalties. The intercept is always present and unpenalized.
 The penalty is part of the component decomposition, not a hyperparameter chosen
-by cross-validation.
+by cross-validation. Ridge defaults to component penalty `1.0` and condition
+penalty `0.1`. The component penalty may be `0`; the condition penalty must stay
+positive because the condition one-hot block spans the intercept.
+
+## Formula and conditions
 
 The formula contains RHS component terms only. Numeric additive terms, `a:b`,
 and two-way `a * b` are supported. A response, `0`/`-1`, formula functions,
@@ -89,10 +109,11 @@ Every raw value maps to at most one group within each mapping. `expression`
 must contain all training values but may use different group labels and add
 values that never enter fitting. `expression=None` copies `conditions`.
 
-The condition keys define the complete one-hot condition basis. Exact overlap
-between component and condition spaces is intentional and handled by ridge.
-The theoretical components themselves, together with the intercept, must be
-linearly independent in the training trials of every subject and every fold.
+The condition keys define the complete condition basis. In ridge, exact overlap
+between component and condition spaces is intentional and handled by the
+penalties.
+For both methods, the theoretical components together with the intercept must
+be linearly independent in the training trials of every subject and every fold.
 If they are aliased, the data cannot separate their patterns: ridge would still
 return coefficients, but the split among the aliased terms would be set by the
 penalties. `encode()` therefore stops with an error that names each relation,
@@ -101,21 +122,20 @@ contains color, number, or both. Remove or recode one term in each relation.
 Near-dependence is not an error; the component condition number in
 `design_diagnostics` records it.
 
-### Denoised orthogonal condition decomposition
+## Orthogonal condition decomposition (default)
 
-To estimate a condition-space decomposition without competing theoretical and
-full-condition columns, choose an explicit alternative method:
+The default method estimates a condition-space decomposition without competing
+theoretical and full-condition columns:
 
 ```python
 pipeline.setup_model(
     method="orthogonal",
-    penalty={"component": 0.0, "condition": 0.1},  # the defaults for this method
+    penalty={"component": 0.0, "condition": 0.1},  # the defaults
     weights=None,  # equal condition weights; or positive weights for all condition keys
 )
 ```
 
-The default remains `method="ridge"` with the existing trial-level estimator.
-This preserves its ability to model trial-varying predictors. `weights` is
+`weights` is
 specific to the orthogonal method and is normalized to sum to one, then saved
 in `analysis.config.model` with the method and penalties. Orthogonal codes must
 be constant within every training condition; pooling different predictor codes
@@ -199,7 +219,7 @@ overlap is assigned to theory by definition. Neither method can identify the
 original latent attribution from these data alone. Low trial counts and low
 SNR remain sources of variance; strongly shrinking theory can increase bias.
 
-### Paired comparison with current ridge
+### Paired comparison with ridge
 
 The reproducible synthetic comparison is
 `tests/encoding/benchmark_orthogonal.py`. It uses seed 271032, 100 replicates
@@ -233,8 +253,7 @@ coefficient error in 72. These are sensitivity counts from a bounded simulation,
 not confidence probabilities or universal superiority. The practical benefit is
 removal of residual-penalty allocation dependence and, in several noisy cases,
 better recovery/prediction. Low-noise full prediction and some high-noise theory
-estimates are worse. The method is therefore explicit rather than a replacement
-default. A separate near-collinearity test confirms regularization reduces
+estimates are worse. A separate near-collinearity test confirms regularization reduces
 coefficient variance relative to unregularized projection; it does not promise
 that every setting is more stable than the current, heavily shrunk ridge model.
 On a small 32-trial/five-condition/four-channel/two-bin fit, median numerical

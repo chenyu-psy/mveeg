@@ -77,7 +77,7 @@ def test_aliases_and_trial_varying_codes_have_explicit_method_boundary():
             method="orthogonal",
         )
     metadata.loc[0, "a"] = 0.5
-    with pytest.raises(ValueError, match="condition-constant"):
+    with pytest.raises(ValueError, match="one code per training condition"):
         build_design(metadata, **{**settings, "formula": "a"}, method="orthogonal")
 
 
@@ -161,7 +161,7 @@ def test_pipeline_saves_method_weights_and_rejects_reusing_other_estimand(tmp_pa
             "WHERE predictor LIKE 'condition[%]' ORDER BY predictor, channel, time"
         ).fetchdf()
         assert np.isfinite(residual.beta).all()
-    pipeline.setup_model()
+    pipeline.setup_model(method="ridge")
     with pytest.raises(ValueError, match="incompatible"):
         pipeline.encode(**settings)
 
@@ -192,7 +192,16 @@ def test_orthogonal_defaults_to_unpenalized_components(tmp_path):
     pipeline.setup_model(method="orthogonal", penalty={"component": 2.0})
     assert pipeline._model["penalty"] == {"component": 2.0, "condition": 0.1}
     pipeline.setup_model()
-    assert pipeline._model["penalty"] == {"component": 1.0, "condition": 0.1}
+    assert pipeline._model["penalty"] == {"component": 0.0, "condition": 0.1}
+    assert pipeline._model["method"] == "orthogonal"
+
+
+def test_explicit_ridge_keeps_the_pre_orthogonal_default_configuration(tmp_path):
+    # Result files written when ridge was the default stay current when the
+    # script adds setup_model(method="ridge"): the stored model config is unchanged.
+    dataset = _build_dataset(tmp_path / "dataset", ["001"])
+    pipeline = _pipeline(dataset).setup_model(method="ridge")
+    assert pipeline._model == {"penalty": {"component": 1.0, "condition": 0.1}}
 
 
 def test_unpenalized_theory_does_not_depend_on_code_scale():
