@@ -168,7 +168,8 @@ are **not interchangeable** with the trial-sum ridge penalties. No automatic
 truth-based or held-out-expression-based penalty tuning is performed.
 
 The theory design must have full column rank including intercept to report
-identified individual components. Exact aliases raise a targeted error;
+identified individual components. Exact aliases stop `encode()` with the same
+error as ridge, which names each relation;
 near-collinear full-rank codes remain supported with regularization and a
 `weighted_theory_condition_number` diagnostic. Regularization improves
 stability but cannot create independently identified effects from a redundant

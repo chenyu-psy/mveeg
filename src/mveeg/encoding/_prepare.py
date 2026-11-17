@@ -208,13 +208,9 @@ def build_design(
                     "Use method='ridge' for trial-varying codes."
                 )
             condition_design.append(values[0])
+        # Aliased theory is rejected for both methods by
+        # check_component_identifiability before any fold is fitted.
         condition_design = np.asarray(condition_design)
-        if np.linalg.matrix_rank(condition_design) != component_count:
-            raise ValueError(
-                "Theoretical condition design (including intercept) is rank deficient; "
-                "individual component patterns are not identifiable. Remove redundant terms "
-                "or use the explicitly penalty-dependent ridge method."
-            )
         weights = normalize_condition_weights(condition_order, weights)
         condition_weights = np.array([weights[c] for c in condition_order])
 

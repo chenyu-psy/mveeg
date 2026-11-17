@@ -59,8 +59,23 @@ def test_aliases_and_trial_varying_codes_have_explicit_method_boundary():
         penalty={"component": 1.0, "condition": 0.1},
     )
     assert build_design(metadata, **settings).method == "ridge"
-    with pytest.raises(ValueError, match="not identifiable"):
-        build_design(metadata, **settings, method="orthogonal")
+    with pytest.raises(ValueError, match=r"aliased in the training trials: alias = a\."):
+        encode_subject(
+            subject="001",
+            data=np.random.default_rng(0).normal(size=(len(metadata), 2, 1)),
+            metadata=metadata,
+            training_labels=labels,
+            expression_labels=labels,
+            trial_ids=np.arange(len(metadata)),
+            times=np.array([25]),
+            condition_order=["A", "B"],
+            formula="a+alias",
+            penalty={"component": 0.0, "condition": 0.1},
+            folds=2,
+            seed=1,
+            progress=False,
+            method="orthogonal",
+        )
     metadata.loc[0, "a"] = 0.5
     with pytest.raises(ValueError, match="condition-constant"):
         build_design(metadata, **{**settings, "formula": "a"}, method="orthogonal")
