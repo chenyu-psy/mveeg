@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import mveeg.encoding._analysis as analysis
 from mveeg.encoding._analysis import encode_subject
 from mveeg.encoding._prepare import build_design
 from mveeg.encoding._reference import build_expression_references
@@ -229,7 +230,7 @@ def test_contrast_coding_nonzero_reference_and_exact_floating_match_policy():
         build_expression_references(design, {"a": 0.1})
 
 
-def test_no_heldout_reference_and_near_null_pattern_fail_without_fallback():
+def test_no_heldout_reference_and_near_null_pattern_fail_without_fallback(monkeypatch):
     settings = _settings()
     # This observed code occurs in one training trial, so cannot be held out
     # from every fold model. It must not be reused in the models that trained it.
@@ -237,10 +238,22 @@ def test_no_heldout_reference_and_near_null_pattern_fail_without_fallback():
     rare_code.loc[0, "a"] = 2
     with pytest.raises(ValueError, match="no matching reference trials are held out"):
         encode_subject(**{**settings, "metadata": rare_code}, expression_reference={"a": 2})
+    # An all-zero component is now rejected as aliased before any reference is built.
     zero_component = settings["metadata"].copy()
     zero_component.a = 0
-    with pytest.raises(ValueError, match="nonfinite"):
+    with pytest.raises(ValueError, match="aliased in the training trials: a = 0"):
         encode_subject(**{**settings, "metadata": zero_component}, expression_reference={"a": 0})
+
+    # A near-null filter leaves undefined (NaN) expression; it cannot define a reference.
+    original = analysis.compute_pattern_expression
+
+    def undefined_expression(*args, **kwargs):
+        expression, warnings = original(*args, **kwargs)
+        return np.full_like(expression, np.nan), warnings
+
+    monkeypatch.setattr(analysis, "compute_pattern_expression", undefined_expression)
+    with pytest.raises(ValueError, match="nonfinite"):
+        encode_subject(**settings, expression_reference={"a": 0})
 
 
 def _pipeline_case(tmp_path, subjects=("001",)):
