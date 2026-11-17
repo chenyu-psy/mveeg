@@ -197,8 +197,8 @@ def test_orthogonal_defaults_to_unpenalized_components(tmp_path):
 
 
 def test_explicit_ridge_keeps_the_pre_orthogonal_default_configuration(tmp_path):
-    # Result files written when ridge was the default stay current when the
-    # script adds setup_model(method="ridge"): the stored model config is unchanged.
+    # setup_model(method="ridge") reproduces the model settings of releases where
+    # ridge was the default: the stored model config is unchanged.
     dataset = _build_dataset(tmp_path / "dataset", ["001"])
     pipeline = _pipeline(dataset).setup_model(method="ridge")
     assert pipeline._model == {"penalty": {"component": 1.0, "condition": 0.1}}

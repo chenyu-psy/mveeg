@@ -2,32 +2,43 @@
 
 ## Changed
 
+- **Breaking:** encoding result files written by earlier releases must be
+  recomputed with `recompute="all"`. Running an existing script against one
+  reports incompatible analysis settings, because the analysis configuration
+  now records the orthogonal default and the automatic reference rule below.
+  Encoding refits quickly (about 2 s per subject in a 939-trial, 31-channel
+  dataset, most of it loading).
 - **Breaking:** encoding now uses `method="orthogonal"` by default. It fits
   condition means, so its component patterns are identified by the data rather
   than by the ridge penalty ratio. Ridge remains available with
   `setup_model(method="ridge")` and is required when a component varies within
-  a condition; the orthogonal method stops with an error that says so. Existing
-  result files were written with ridge: running an unchanged script against
-  one now reports incompatible analysis settings. Add
-  `setup_model(method="ridge")` to keep them current, or use `recompute="all"`.
+  a condition; the orthogonal method stops with an error that says so. Add
+  `setup_model(method="ridge")` to reproduce results from earlier releases.
 - Encoding now stops with an error when formula components are aliased with
   each other or with the intercept in a subject's training trials or in any
   training fold. The message names each relation, such as
   `interaction = color + number - intercept`. Earlier releases fitted these
   designs and only recorded the rank deficiency in `design_diagnostics`, but the
   patterns of aliased components were set by the ridge penalties rather than by
-  the data. Formulas without aliased components give the same results and
-  fingerprints as before.
+  the data. Formulas without aliased components give the same results as
+  before.
 
 ## New
 
 - Add explicit `setup_model(method="orthogonal", weights=...)` for denoised
   condition-space decomposition with theoretical-orthogonal residual patterns.
-  Existing ridge remains the default. The orthogonal method defaults to an
+  The orthogonal method defaults to an
   unpenalized component block (`component=0.0`), so its theoretical patterns do
   not depend on code scale; its condition penalty only rescales residual
   condition patterns. Document estimator-specific penalty scales, identifiable
   condition codes, and paired synthetic accuracy tradeoffs.
+- Encoding automatically references every component whose condition design
+  contains code 0: per fold and time, the mean held-out expression of code-0
+  trials is subtracted, so 0 means "same as code-0 trials". Raw expression and
+  condition differences are unchanged. Three new tables
+  (`referenced_pattern_expression`, `expression_references`,
+  `expression_reference_trials`) and two views hold the referenced scores,
+  offsets, and the trials behind each offset.
 
 # mveeg 0.4.0
 

@@ -43,6 +43,11 @@ trip, so dtype differences and float rounding are ignored. Channels are matched
 by name, so subjects may store them in a different order.
 
 See [Decoding](decoding.md) and [Encoding](encoding.md) for their full tables.
+Encoding also saves zero-code reference results for every component whose
+condition design contains code 0. These additive tables keep raw scores and use
+distinct public trial counts; auxiliary reference projections are not
+independent trials. See the
+[reference contract](encoding.md#zero-code-expression-references).
 
 ## Channel coordinates
 

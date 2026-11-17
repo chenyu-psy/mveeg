@@ -36,6 +36,9 @@ SUBJECT_TABLES = (
     "pattern_expression",
     "design_diagnostics",
     "covariance_diagnostics",
+    "referenced_pattern_expression",
+    "expression_references",
+    "expression_reference_trials",
 )
 ANALYSIS_COLUMNS = (
     "schema_version",
@@ -47,6 +50,37 @@ ANALYSIS_COLUMNS = (
     "updated",
 )
 RESULT_COLUMNS = {
+    "referenced_pattern_expression": (
+        "subject_index",
+        "epoch_index",
+        "time",
+        "component",
+        "expression_group",
+        "raw_expression",
+        "reference_expression",
+        "expression",
+        "fold",
+    ),
+    "expression_references": (
+        "subject_index",
+        "fold",
+        "component",
+        "time",
+        "reference_value",
+        "reference_expression",
+        "n_trials",
+    ),
+    "expression_reference_trials": (
+        "subject_index",
+        "epoch_index",
+        "fold",
+        "component",
+        "time",
+        "reference_value",
+        "weight",
+        "raw_expression",
+        "auxiliary",
+    ),
     "coefficients": ("subject_index", "time", "channel", "predictor", "beta"),
     "pattern_expression": (
         "subject_index",
@@ -115,6 +149,10 @@ def initialize_store(
         try:
             if reset:
                 connection.execute("DROP VIEW IF EXISTS condition_pattern_expression")
+                connection.execute("DROP VIEW IF EXISTS condition_referenced_pattern_expression")
+                connection.execute(
+                    "DROP VIEW IF EXISTS fold_condition_referenced_pattern_expression"
+                )
                 for table in table_names(connection):
                     connection.execute(f'DROP TABLE "{table}"')
             connection.execute(
@@ -181,6 +219,8 @@ def write_subject(
             for name, table in tables.items():
                 insert_frame(connection, name, table)
             _create_condition_view(connection)
+            if "referenced_pattern_expression" in tables:
+                _create_referenced_condition_view(connection)
             mark_complete(connection, subject, fingerprint)
             connection.execute("COMMIT")
         except Exception:
@@ -223,12 +263,59 @@ def _create_condition_view(connection: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def referenced_components(path: Path) -> list[str] | None:
+    """Return components referenced by completed subjects, or None if there are none."""
+
+    if not path.exists():
+        return None
+    with duckdb.connect(str(path), read_only=True) as connection:
+        if not table_exists(connection, "subjects"):
+            return None
+        complete = connection.execute(
+            "SELECT COUNT(*) FROM subjects WHERE status = 'complete'"
+        ).fetchone()[0]
+        if not complete:
+            return None
+        if not table_exists(connection, "expression_references"):
+            return []
+        rows = connection.execute(
+            "SELECT DISTINCT r.component FROM expression_references AS r "
+            "JOIN subjects AS s USING (subject_index) WHERE s.status = 'complete' "
+            "ORDER BY r.component"
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _create_referenced_condition_view(connection: duckdb.DuckDBPyConnection) -> None:
+    """Summarize public trials equally and expose fold mixtures without trial-based SEs."""
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW condition_referenced_pattern_expression AS
+        SELECT subject_index, expression_group AS condition, component, time,
+               AVG(expression) AS mean, COUNT(DISTINCT epoch_index) AS n_trials,
+               COUNT(DISTINCT fold) AS n_folds
+        FROM referenced_pattern_expression
+        GROUP BY subject_index, expression_group, component, time
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW fold_condition_referenced_pattern_expression AS
+        SELECT subject_index, fold, expression_group AS condition, component, time,
+               AVG(expression) AS mean, COUNT(DISTINCT epoch_index) AS n_trials
+        FROM referenced_pattern_expression
+        GROUP BY subject_index, fold, expression_group, component, time
+        """
+    )
+
+
 __all__ = [
     "completed_subjects",
     "initialize_store",
     "mark_failed",
     "mark_pending",
     "read_analysis",
+    "referenced_components",
     "result_path",
     "subject_state",
     "write_subject",

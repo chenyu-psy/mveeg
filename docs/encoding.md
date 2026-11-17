@@ -65,9 +65,10 @@ one penalty and keeps the method's default for the other.
   its component coefficients are not identified by the data.
 
 The orthogonal method stops with an error that points to ridge when a code
-varies within a condition. Result files written before orthogonal became the
-default used ridge; add `setup_model(method="ridge")` to reproduce them, or
-recompute with the new default.
+varies within a condition. Results from releases where ridge was the default
+are reproduced with `setup_model(method="ridge")`; their result files must be
+recomputed with `recompute="all"` (see
+[zero-code references](#zero-code-expression-references)).
 
 ## Ridge model
 
@@ -287,6 +288,101 @@ s = y' inv(Sigma) beta / sqrt(beta' inv(Sigma) beta)
 After held-out expression is complete, mveeg fits the same model once to all
 training trials. Only this full-data raw-scale beta is written to
 `coefficients`; fold betas remain internal.
+
+## Zero-code expression references
+
+Raw `pattern_expression` is measured from the training-mean trial, so its zero
+depends on the mix of training trials. For figures, a more natural zero is often
+a baseline condition. `encode()` adds this automatically, with no argument:
+
+- A component is **referenced** when its code is constant within each training
+  condition and at least one training condition has code exactly `0`. For
+  `presence` coded 0/1, the reference is every trial with `presence == 0`.
+- Components without a code-0 condition (for example set size coded 2/4, or a
+  -0.5/0.5 contrast) and components that vary within a condition keep the raw
+  zero only.
+- The same rule covers interactions: `a:b` is referenced to every trial whose
+  product is 0, that is, every trial without both `a` and `b`.
+- Matching is exact. A code computed as `0.1 + 0.2 - 0.3` is not 0; round or
+  define codes explicitly in `transform_metadata()`.
+
+Every subject has every training condition, so every subject gets the same
+referenced components. If they differ anyway, encoding stops with an error.
+
+### What the reference does
+
+The fitted model, filters, and noise estimates are unchanged. For component `k`,
+fold `f`, and time `t`:
+
+```text
+R_fk         = code-0 trials that did not train the fold-f model
+offset_fk(t) = mean raw expression of R_fk at t (equal trial weights)
+referenced   = raw expression - offset_fk(t)
+```
+
+So 0 means "same as code-0 trials at that time point". One offset is subtracted
+from every trial of a fold, so differences between conditions are unchanged
+within a fold; across folds they can move slightly when conditions are unevenly
+spread over folds. Referencing changes where 0 sits in figures, not condition
+differences or tests on them. Compare conditions; tests of a single condition
+against 0 are not meaningful for raw or referenced expression.
+
+Training-condition reference trials contribute only to the fold that held them
+out. Expression-only code-0 trials never train any model, so they are projected
+under every fold as **auxiliary** reference evidence. They appear only in the
+evidence table and never duplicate public rows. A fold without held-out code-0
+trials, or a nonfinite reference projection, stops with an error.
+
+### Result tables
+
+`pattern_expression` and `condition_pattern_expression` are unchanged. When at
+least one component is referenced, encoding also writes:
+
+- `referenced_pattern_expression(subject_index, epoch_index, time, component,
+  expression_group, raw_expression, reference_expression, expression, fold)`:
+  referenced components only; `expression = raw_expression -
+  reference_expression`.
+- `expression_references(subject_index, fold, component, time, reference_value,
+  reference_expression, n_trials)`: the offset of each fold model.
+- `expression_reference_trials(subject_index, epoch_index, fold, component, time,
+  reference_value, weight, raw_expression, auxiliary)`: which trials formed each
+  offset, with `weight = 1/N`.
+
+The views `condition_referenced_pattern_expression` (trial-weighted `mean`,
+`n_trials`, `n_folds`) and `fold_condition_referenced_pattern_expression`
+summarize them. Neither reports a trial-based SE, because a shared offset makes
+trial errors dependent; use participants as the inferential unit.
+
+`analysis.config.expression_reference` records the rule. Result files written
+before automatic references lack it, so they report incompatible settings and
+need `recompute="all"`.
+
+### Synthetic check
+
+`tests/encoding/benchmark_expression_reference.py` is a fixed-seed synthetic
+comparison through the actual CV fitting path: 200 paired replicates at each
+of noise-only, weak (.25) and strong (1) signal levels, four folds, uneven
+condition counts `[7,11,8,5]`, expression-only counts `[1,3]`, correlated
+predictors and 12 correlated average-referenced channels. The same fitted
+models supply raw and referenced scores; there is no truth-based parameter
+tuning or extra half-training split.
+
+| Signal | Displayed zero-code A mean, raw / referenced | A SD, raw / referenced | D−A mean, raw / referenced |
+| --- | ---: | ---: | ---: |
+| Weak .25 | −.4594 / .0194 | .5502 / .5062 | .9466 / .9427 |
+| Strong 1 | −2.8842 / −.0042 | .5937 / .5938 | 6.3438 / 6.3126 |
+
+Here A and the expression-only reference observations have the same generative
+mean, so the approximately zero referenced A mean demonstrates the intended
+observed-reference origin in this case, not a guarantee for every zero-coded
+condition under other components or omitted effects. Noise-only D−A means
+were .0058 ± .0744 Monte Carlo SE raw and −.0011 ± .0738 referenced: there was
+no demonstrated new systematic gradient. Within-fold differences were
+preserved within `1.8e-15`; the pooled reference evidence centered itself
+within `1.1e-15`. Aggregate D−A can change because folds have unequal mixtures.
+These bounded results show useful origin calibration without the previous
+independent-half fitting variance cost. They do not establish universal
+variance improvement or neural-source identification.
 
 ## DuckDB tables
 

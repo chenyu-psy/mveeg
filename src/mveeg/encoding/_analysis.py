@@ -18,6 +18,7 @@ from ._metrics import (
     fit_ridge,
 )
 from ._prepare import EncodingDesign, build_design, check_component_identifiability
+from ._reference import compute_expression_references, zero_code_references
 
 
 @dataclass
@@ -68,6 +69,7 @@ def encode_subject(
         method=method,
         weights=weights,
     )
+    references = zero_code_references(design, training_labels)
     training = pd.notna(training_labels)
     counts = pd.Series(training_labels[training]).value_counts()
     missing = [condition for condition in condition_order if condition not in counts]
@@ -122,6 +124,7 @@ def encode_subject(
             expression_labels=expression_labels,
             trial_ids=trial_ids,
             times=times,
+            references=references,
         )
         for fold, train_rows, test_rows in fold_specs
     )
@@ -154,23 +157,28 @@ def encode_subject(
     for result in fold_results:
         diagnostics.extend(result["design_diagnostics"])
 
-    return SubjectEncoding(
-        tables={
-            "coefficients": coefficients,
-            "pattern_expression": pd.concat(
-                [result["pattern_expression"] for result in fold_results],
-                ignore_index=True,
-            )
-            .sort_values(["subject_index", "epoch_index", "component", "time"])
-            .reset_index(drop=True),
-            "design_diagnostics": pd.DataFrame(diagnostics),
-            "covariance_diagnostics": pd.concat(
-                [result["covariance_diagnostics"] for result in fold_results],
-                ignore_index=True,
-            ),
-        },
-        predictors=design.predictors,
-    )
+    tables = {
+        "coefficients": coefficients,
+        "pattern_expression": pd.concat(
+            [result["pattern_expression"] for result in fold_results],
+            ignore_index=True,
+        )
+        .sort_values(["subject_index", "epoch_index", "component", "time"])
+        .reset_index(drop=True),
+        "design_diagnostics": pd.DataFrame(diagnostics),
+        "covariance_diagnostics": pd.concat(
+            [result["covariance_diagnostics"] for result in fold_results],
+            ignore_index=True,
+        ),
+    }
+    if references:
+        for name in (
+            "referenced_pattern_expression",
+            "expression_references",
+            "expression_reference_trials",
+        ):
+            tables[name] = pd.concat([result[name] for result in fold_results], ignore_index=True)
+    return SubjectEncoding(tables=tables, predictors=design.predictors)
 
 
 def _fit_design(data: np.ndarray, design: EncodingDesign, rows: np.ndarray) -> np.ndarray:
@@ -198,6 +206,7 @@ def _fit_fold(
     expression_labels: np.ndarray,
     trial_ids: np.ndarray,
     times: np.ndarray,
+    references: tuple = (),
 ) -> dict[str, object]:
     train_design = design.matrix[train_rows]
     beta = _fit_design(data[train_rows], design, train_rows)
@@ -248,7 +257,7 @@ def _fit_fold(
         }
         for warning in warnings
     )
-    return {
+    result = {
         "pattern_expression": _expression_table(
             subject=subject,
             fold=fold,
@@ -262,6 +271,46 @@ def _fit_fold(
         "design_diagnostics": diagnostics,
         "covariance_diagnostics": pd.DataFrame(covariance_rows),
     }
+    if references:
+        offsets, reference_rows, reference_trials = compute_expression_references(
+            subject=subject,
+            fold=fold,
+            plans=references,
+            data=data,
+            train_mean=train_mean,
+            train_rows=train_rows,
+            test_rows=test_rows,
+            raw_expression=expression,
+            beta_patterns=beta[np.asarray(design.component_indices)],
+            precision=precision,
+            trial_ids=trial_ids,
+            times=times,
+        )
+        raw = expression[:, [plan.component_index for plan in references], :]
+        referenced = _expression_table(
+            subject=subject,
+            fold=fold,
+            rows=test_rows,
+            trial_ids=trial_ids,
+            expression_labels=expression_labels,
+            components=[plan.component for plan in references],
+            times=times,
+            expression=raw - offsets[None, :, :],
+        )
+        referenced.insert(5, "raw_expression", raw.transpose(1, 0, 2).reshape(-1))
+        referenced.insert(
+            6,
+            "reference_expression",
+            np.broadcast_to(
+                offsets[:, None, :], (len(references), len(test_rows), len(times))
+            ).reshape(-1),
+        )
+        result.update(
+            referenced_pattern_expression=referenced,
+            expression_references=reference_rows,
+            expression_reference_trials=reference_trials,
+        )
+    return result
 
 
 def _expression_table(
